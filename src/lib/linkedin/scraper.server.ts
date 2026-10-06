@@ -558,8 +558,8 @@ export async function scrapePublic(opts: { url: string; relay: Relay; timeoutMs:
    the profile's public search listing through the Firecrawl connector) ---------------- */
 export async function scrapeNoSession(opts: { url: string; timeoutMs: number }): Promise<ProfilePayload> {
   const slug = extractSlug(opts.url);
-  const lovable = process.env.LOVABLE_API_KEY;
-  const fc = process.env.FIRECRAWL_API_KEY;
+  const lovable = process.env["LOVABLE_API_KEY"];
+  const fc = process.env["FIRECRAWL_API_KEY"];
   if (!lovable || !fc) throw new ScrapeError("session_required", "Public lookup is not configured; add a LinkedIn session in Settings");
   const target = `https://www.linkedin.com/in/${slug}`;
   const search = async (query: string) => {
