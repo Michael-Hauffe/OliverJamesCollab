@@ -603,6 +603,17 @@ export async function scrapeNoSession(opts: { url: string; timeoutMs: number }):
   const fc = process.env["FIRECRAWL_API_KEY"];
   if (!lovable || !fc) throw new ScrapeError("session_required", "Public lookup is not configured; add a LinkedIn session in Settings");
   const target = `https://www.linkedin.com/in/${slug}`;
+  let lastList: any[] = [];
+  const gw = async (path: string, body: object) => {
+    const r = await fetch(`https://connector-gateway.lovable.dev/firecrawl/v2/${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${lovable}`, "X-Connection-Api-Key": fc },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(45000),
+    });
+    if (!r.ok) return null;
+    return (await r.json()) as any;
+  };
   const search = async (query: string) => {
     let res: Response;
     try {
@@ -622,6 +633,7 @@ export async function scrapeNoSession(opts: { url: string; timeoutMs: number }):
     }
     const j: any = await res.json();
     const list: any[] = j?.data?.web ?? j?.data ?? [];
+    lastList = list;
     return list.find((r) => {
       try {
         const u = new URL(r.url);
@@ -637,21 +649,78 @@ export async function scrapeNoSession(opts: { url: string; timeoutMs: number }):
   const full = (namePart || slug).trim();
   const [first, ...last] = full.split(" ");
   const field = (k: string) => desc.match(new RegExp(`${k}:\\s*([^·]+)`, "i"))?.[1]?.trim().replace(/\.\.\.$/, "") || null;
-  const company = field("Experience");
-  const school = field("Education");
+  let company = field("Experience");
+  let school = field("Education");
+  let location = field("Location") ?? desc.match(/([A-Z][\w .'-]+,\s*[A-Z][\w .'-]+(?:,\s*United [A-Za-z]+)?)\s+\d/)?.[1]?.trim() ?? null;
+  const followers = desc.match(/([\d.,]+K?\+?)\s+followers/i)?.[1] ?? null;
+  const connections = desc.match(/([\d.,]+K?\+?)\s+connections/i)?.[1] ?? null;
+  const headline = rest.join(" - ").replace(/\s*\.\.\.$/, "").trim() || null;
+
+  // Enrichment: search the open web for this person's public pages and read contact details from them.
+  const emails = new Set<string>(), phones = new Set<string>(), websites = new Set<string>();
+  const socials: Record<string, string> = {};
+  const sources = new Set<string>([target]);
+  let about = desc.replace(/\s*\.\.\.$/, "");
+  let image: string | null = null;
+  const firstHeadline = headline?.split(/[|·,]/)[0]?.trim() ?? "";
+  const res2 = await gw("search", {
+    query: `"${full}" ${firstHeadline} -site:linkedin.com`,
+    limit: 5,
+    scrapeOptions: { formats: ["markdown", "links"], onlyMainContent: false },
+  }).catch(() => null);
+  const pages: any[] = res2?.data?.web ?? res2?.data ?? [];
+  const nameRe = new RegExp(full.split(/\s+/).map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "")).join(".{0,3}"), "i");
+  const SOCIAL: Record<string, RegExp> = {
+    x: /https?:\/\/(?:www\.)?(?:twitter|x)\.com\/(?!intent|share|home|search)[A-Za-z0-9_]{2,15}\/?$/i,
+    instagram: /https?:\/\/(?:www\.)?instagram\.com\/(?!p\/|explore)[A-Za-z0-9_.]{2,30}\/?$/i,
+    facebook: /https?:\/\/(?:www\.)?facebook\.com\/(?!sharer|share)[A-Za-z0-9.]{3,}\/?$/i,
+    youtube: /https?:\/\/(?:www\.)?youtube\.com\/(?:@|c\/|channel\/)[\w-]+\/?$/i,
+    tiktok: /https?:\/\/(?:www\.)?tiktok\.com\/@[\w.]+\/?$/i,
+    github: /https?:\/\/(?:www\.)?github\.com\/[A-Za-z0-9-]{2,39}\/?$/i,
+  };
+  for (const pg of pages) {
+    const md: string = pg.markdown ?? pg.description ?? "";
+    if (!nameRe.test(`${pg.title ?? ""} ${md.slice(0, 5000)}`)) continue; // only pages about this person
+    // Only trust pages the person owns: their site (domain matches name/slug) or their own social profile.
+    let host = "";
+    try { host = new URL(pg.url).hostname.replace(/^www\./, "").toLowerCase(); } catch { continue; }
+    const bits = [...full.toLowerCase().split(/\s+/).filter((b) => b.length > 2), slug.toLowerCase().replace(/[^a-z]/g, "")];
+    const related = (t: string) => { const x = t.toLowerCase().replace(/[^a-z0-9]/g, ""); return bits.some((b) => b.length > 3 && (x.includes(b.replace(/[^a-z]/g, "")) || b.includes(x) && x.length > 4)) || x.includes(slug.toLowerCase().replace(/^madeby|[^a-z]/g, "").slice(0, 8)); };
+    const isSocial = Object.values(SOCIAL).some((re) => re.test(pg.url.replace(/\/$/, "")));
+    const owned = isSocial ? related(pg.url.split("/").filter(Boolean).pop() ?? "") : related(host.split(".")[0]!);
+    if (!owned) continue;
+    sources.add(pg.url);
+    if (!isSocial) websites.add(`https://${host}`);
+    const links: string[] = pg.links ?? [];
+    const okEmail = (e: string) => !/\.(png|jpe?g|gif|webp|svg)$/.test(e) && !/example|sentry|wixpress|noreply|no-reply/.test(e) && (isSocial ? related(e.split("@")[0]!) || related(e.split("@")[1]!.split(".")[0]!) : e.endsWith(host) || related(e.split("@")[0]!));
+    for (const m of md.matchAll(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g)) { const e = m[0].toLowerCase(); if (okEmail(e)) emails.add(e); }
+    for (const l of links) if (l.startsWith("mailto:")) { const e = l.slice(7).split("?")[0]!.toLowerCase(); if (okEmail(e)) emails.add(e); }
+    if (!isSocial) {
+      for (const l of links) if (l.startsWith("tel:")) phones.add(decodeURIComponent(l.slice(4)).trim());
+      for (const l of links) for (const [k, re] of Object.entries(SOCIAL)) if (!socials[k] && re.test(l) && related(l.replace(/\/$/, "").split("/").pop() ?? "")) socials[k] = l.replace(/\/$/, "");
+    } else {
+      for (const [k, re] of Object.entries(SOCIAL)) if (!socials[k] && re.test(pg.url.replace(/\/$/, ""))) socials[k] = pg.url.replace(/\/$/, "");
+    }
+    if (!image && pg.metadata?.ogImage && /^https:/.test(pg.metadata.ogImage)) image = pg.metadata.ogImage;
+    if (!location) location = md.match(/(?:based in|lives in|located in)\s+([A-Z][A-Za-z .,'-]{2,40}?)(?:[.,;]|\s+(?:and|with|where))/)?.[1]?.trim() ?? null;
+    if (!about && pg.description) about = pg.description;
+  }
   return {
     data: {
       public_identifier: slug,
       profile_url: target,
       name: { first: first ?? null, last: last.join(" ") || null, full },
-      headline: rest.join(" - ") || null,
-      location: field("Location"),
-      about: desc || null,
-      profile_image: null,
+      headline,
+      location,
+      about: about || null,
+      profile_image: image ? { url: image, width: null, height: null } : null,
       background_image: null,
       experience: company ? [{ title: null, company: { name: company, linkedin_url: null }, employment_type: null, location: null, start_date: null, end_date: null, is_current: true, description: null }] : [],
       education: school ? [{ school, degree: null, field_of_study: null, start_date: null, end_date: null, description: null, grade: null }] : [],
       skills: [], certifications: [], languages: [],
+      contact: { emails: [...emails].slice(0, 5), phones: [...phones].slice(0, 5), websites: [...websites].slice(0, 5), socials },
+      followers, connections,
+      sources: [...sources],
     } as ProfileData,
     meta: {
       source: "public_listing (no session)", completeness: 0.25,

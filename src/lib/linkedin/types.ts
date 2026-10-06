@@ -39,6 +39,10 @@ export type ProfileData = {
     credential_url: string | null;
   }[];
   languages: { name: string; proficiency: string | null }[];
+  contact?: { emails: string[]; phones: string[]; websites: string[]; socials: Record<string, string> };
+  followers?: string | null;
+  connections?: string | null;
+  sources?: string[];
 };
 
 export type ProfilePayload = {
