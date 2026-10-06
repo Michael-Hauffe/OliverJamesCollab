@@ -592,6 +592,43 @@ export async function scrapePublic(opts: { url: string; relay: Relay; timeoutMs:
       warnings: ["public_page_only:limited_fields"], cached: false, fetched_at: new Date().toISOString(),
     },
   };
+  // LinkedIn hides most fields behind asterisks for logged-out visitors. Remove masked values
+  // and fill the gaps from public web research.
+  const masked = (v: unknown) => typeof v === "string" && (v.match(/\*/g)?.length ?? 0) > v.replace(/\s/g, "").length * 0.3;
+  const unmask = (v: any): any => {
+    if (masked(v)) return null;
+    if (Array.isArray(v)) return v.map(unmask);
+    if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, unmask(x)]));
+    return v;
+  };
+  const hadMask = JSON.stringify(payload.data).includes("***");
+  const d: ProfileData = unmask(payload.data);
+  d.experience = d.experience.filter((e) => e.company.name || e.title);
+  d.education = d.education.filter((e) => e.school);
+  if (hadMask || !d.headline || d.experience.length < 2) {
+    try {
+      const r = (await scrapeNoSession({ url: opts.url, timeoutMs: opts.timeoutMs })).data;
+      const key = (x: string | null | undefined) => (x ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+      const expKeys = new Set(d.experience.map((e) => key(e.company.name)));
+      const eduKeys = new Set(d.education.map((e) => key(e.school)));
+      Object.assign(d, {
+        headline: d.headline ?? r.headline, location: d.location ?? r.location,
+        about: d.about && d.about.length > (r.about?.length ?? 0) ? d.about : r.about ?? d.about,
+        profile_image: d.profile_image ?? r.profile_image,
+        experience: [...d.experience, ...r.experience.filter((e) => !expKeys.has(key(e.company.name)))],
+        education: [...d.education, ...r.education.filter((e) => !eduKeys.has(key(e.school)))],
+        skills: d.skills.length ? d.skills : r.skills,
+        languages: d.languages.length ? d.languages : r.languages,
+        current_position: r.current_position, current_company: r.current_company, industry: r.industry,
+        achievements: r.achievements, contact: r.contact, followers: r.followers, connections: r.connections,
+        sources: [target, ...(r.sources ?? []).filter((x) => x !== target)],
+      });
+      payload.meta.warnings.push("masked_fields_filled_from_public_research");
+    } catch {
+      payload.meta.warnings.push("masked_fields_removed:add_cookie_session_for_full_profile");
+    }
+  }
+  payload.data = d;
   return payload;
 }
 
