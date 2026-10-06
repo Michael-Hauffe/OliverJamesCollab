@@ -772,29 +772,43 @@ const yr = (y: any): YM => (typeof y === "number" && y > 1900 ? { year: y, month
 async function extractWithAI(name: string, text: string): Promise<any> {
   const key = process.env["LOVABLE_API_KEY"];
   if (!key) return null;
-  const str = { type: "string" }, arr = { type: "array", items: str };
-  const res = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+  const S = { type: ["string", "null"] }, A = { type: "array", items: { type: "string" } }, N = { type: ["number", "null"] };
+  const obj = (props: Record<string, any>) => ({ type: "object", properties: props, required: Object.keys(props), additionalProperties: false });
+  const schema = obj({
+    headline: S, about: S, location: S, industry: S, current_title: S, current_company: S,
+    emails: A, phones: A, websites: A, skills: A, languages: A, achievements: A,
+    socials: { type: "array", items: obj({ platform: { type: "string" }, url: { type: "string" } }) },
+    experience: { type: "array", items: obj({ title: S, company: S, location: S, start_year: N, end_year: N, is_current: { type: "boolean" }, description: S }) },
+    education: { type: "array", items: obj({ school: S, degree: S, field: S, start_year: N, end_year: N }) },
+  });
+  const res = await fetch("https://ai.gateway.lovable.dev/v1/responses", {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-    signal: AbortSignal.timeout(45000),
+    headers: { "Content-Type": "application/json", "Lovable-API-Key": key, Authorization: `Bearer ${key}`, "X-Lovable-AIG-SDK": "fetch" },
     body: JSON.stringify({
-      model: "google/gemini-2.5-flash",
-      messages: [
-        { role: "system", content: "You extract professional profile data about ONE named person from web sources. Use only facts explicitly stated in the sources about that person. Never guess, never invent emails or phone numbers, and ignore details about other people or companies. Omit unknown fields." },
-        { role: "user", content: `Person: ${name}\n\nSources:\n${text}` },
-      ],
-      tools: [{ type: "function", function: { name: "profile", description: "Structured profile", parameters: { type: "object", properties: {
-        headline: str, about: { type: "string", description: "2-4 sentence bio" }, location: str, industry: str, current_title: str, current_company: str,
-        emails: arr, phones: arr, websites: arr, skills: arr, languages: arr, achievements: { ...arr, description: "books, awards, notable work" },
-        socials: { type: "object", additionalProperties: str, description: "platform -> profile URL" },
-        experience: { type: "array", items: { type: "object", properties: { title: str, company: str, location: str, start_year: { type: "number" }, end_year: { type: "number" }, is_current: { type: "boolean" }, description: str } } },
-        education: { type: "array", items: { type: "object", properties: { school: str, degree: str, field: str, start_year: { type: "number" }, end_year: { type: "number" } } } },
-      } } } }],
-      tool_choice: { type: "function", function: { name: "profile" } },
+      model: "openai/gpt-6-astra",
+      stream: true,
+      store: false,
+      reasoning: { effort: "low" },
+      instructions: "Extract professional profile data about ONE named person from the web sources. Use only facts explicitly stated about that person. Never guess or invent emails or phone numbers; ignore details about other people or companies. Use null or empty arrays for unknown values. about = 2-4 sentence bio. achievements = books, awards, notable work.",
+      input: [{ role: "user", content: `Person: ${name}\n\nSources:\n${text}` }],
+      text: { format: { type: "json_schema", name: "profile", strict: true, schema } },
     }),
   });
-  if (!res.ok) throw new Error(`AI ${res.status}`);
-  const j: any = await res.json();
-  const args = j?.choices?.[0]?.message?.tool_calls?.[0]?.function?.arguments;
-  return args ? JSON.parse(args) : null;
+  if (!res.ok || !res.body) throw new Error(`AI ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  let out = "", buf = "";
+  const reader = res.body.getReader(), dec = new TextDecoder();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let k: number;
+    while ((k = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, k).trim(); buf = buf.slice(k + 1);
+      if (!line.startsWith("data:")) continue;
+      try { const ev = JSON.parse(line.slice(5)); if (ev.type === "response.output_text.delta") out += ev.delta; } catch {}
+    }
+  }
+  const j = JSON.parse(out);
+  j.socials = Object.fromEntries((j.socials ?? []).map((x: any) => [x.platform.toLowerCase(), x.url]));
+  return j;
 }
