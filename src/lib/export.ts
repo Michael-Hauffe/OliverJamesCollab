@@ -23,12 +23,31 @@ export function toCsv(p: ProfilePayload): string {
   d.certifications.forEach((c) =>
     rows.push(["certification", c.name, c.issuer, c.credential_url ?? c.credential_id, fmtDate(c.issued_at), fmtDate(c.expires_at), "", ""]),
   );
+  d.contact?.emails.forEach((e) => rows.push(["email", e, "", "", "", "", "", ""]));
+  d.contact?.phones.forEach((e) => rows.push(["phone", e, "", "", "", "", "", ""]));
+  d.contact?.websites.forEach((e) => rows.push(["website", e, "", "", "", "", "", ""]));
+  Object.entries(d.contact?.socials ?? {}).forEach(([k, v]) => rows.push(["social", k, "", v, "", "", "", ""]));
   d.languages.forEach((l) => rows.push(["language", l.name, "", l.proficiency, "", "", "", ""]));
   return rows.map((r) => r.map(esc).join(",")).join("\r\n");
 }
 
+/** Recursively drop null, empty strings, empty arrays and empty objects. */
+function clean(v: any): any {
+  if (Array.isArray(v)) { const a = v.map(clean).filter((x) => x !== undefined); return a.length ? a : undefined; }
+  if (v && typeof v === "object") {
+    const o: any = {};
+    for (const [k, x] of Object.entries(v)) { const c = clean(x); if (c !== undefined) o[k] = c; }
+    return Object.keys(o).length ? o : undefined;
+  }
+  if (v === null || v === "" ) return undefined;
+  return v;
+}
+
+/** Clean export: profile data only, no internal scrape reports. */
+export const exportJson = (p: ProfilePayload) => ({ ...clean(p.data), fetched_at: p.meta.fetched_at });
+
 export function download(p: ProfilePayload, format: "json" | "csv") {
-  const body = format === "json" ? JSON.stringify(p, null, 2) : "\ufeff" + toCsv(p);
+  const body = format === "json" ? JSON.stringify(exportJson(p), null, 2) : "\ufeff" + toCsv(p);
   const blob = new Blob([body], { type: format === "json" ? "application/json" : "text/csv;charset=utf-8" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
