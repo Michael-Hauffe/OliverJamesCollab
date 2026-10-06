@@ -678,6 +678,7 @@ export async function scrapeNoSession(opts: { url: string; timeoutMs: number }):
     tiktok: /https?:\/\/(?:www\.)?tiktok\.com\/@[\w.]+\/?$/i,
     github: /https?:\/\/(?:www\.)?github\.com\/[A-Za-z0-9-]{2,39}\/?$/i,
   };
+  const corpus: string[] = [`SOURCE ${target}\nTITLE: ${title}\nSNIPPET: ${desc}`];
   for (const pg of pages) {
     const md: string = pg.markdown ?? pg.description ?? "";
     if (!nameRe.test(`${pg.title ?? ""} ${md.slice(0, 5000)}`)) continue; // only pages about this person
@@ -690,6 +691,7 @@ export async function scrapeNoSession(opts: { url: string; timeoutMs: number }):
     const owned = isSocial ? related(pg.url.split("/").filter(Boolean).pop() ?? "") : related(host.split(".")[0]!);
     if (!owned) continue;
     sources.add(pg.url);
+    corpus.push(`SOURCE ${pg.url}\n${md.slice(0, 6000)}`);
     if (!isSocial) websites.add(`https://${host}`);
     const links: string[] = pg.links ?? [];
     const okEmail = (e: string) => !/\.(png|jpe?g|gif|webp|svg)$/.test(e) && !/example|sentry|wixpress|noreply|no-reply/.test(e) && (isSocial ? related(e.split("@")[0]!) || related(e.split("@")[1]!.split(".")[0]!) : e.endsWith(host) || related(e.split("@")[0]!));
@@ -705,27 +707,108 @@ export async function scrapeNoSession(opts: { url: string; timeoutMs: number }):
     if (!location) location = md.match(/(?:based in|lives in|located in)\s+([A-Z][A-Za-z .,'-]{2,40}?)(?:[.,;]|\s+(?:and|with|where))/)?.[1]?.trim() ?? null;
     if (!about && pg.description) about = pg.description;
   }
+
+  // Deep pass 1: read the person's own site contact/about pages, where emails and phones usually live.
+  const site = [...websites][0];
+  if (site) {
+    const mapped = await gw("map", { url: site, search: "contact about", limit: 20 }).catch(() => null);
+    const urls: string[] = (mapped?.links ?? []).map((l: any) => (typeof l === "string" ? l : l?.url)).filter(Boolean);
+    const picks = [...new Set(urls.filter((u) => /contact|about|bio|press|speaking|hire|work-with/i.test(u)))].slice(0, 3);
+    const scraped = await Promise.all(picks.map((u) => gw("scrape", { url: u, formats: ["markdown", "links"], onlyMainContent: false }).catch(() => null)));
+    scraped.forEach((r, k) => {
+      const md: string = r?.data?.markdown ?? r?.markdown ?? "";
+      const links: string[] = r?.data?.links ?? r?.links ?? [];
+      if (!md) return;
+      sources.add(picks[k]!);
+      corpus.push(`SOURCE ${picks[k]}\n${md.slice(0, 6000)}`);
+      for (const m of md.matchAll(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g)) { const e = m[0].toLowerCase(); if (!/\.(png|jpe?g|gif|webp|svg)$/.test(e) && !/example|sentry|wixpress|noreply/.test(e)) emails.add(e); }
+      for (const l of links) { if (l.startsWith("mailto:")) emails.add(l.slice(7).split("?")[0]!.toLowerCase()); if (l.startsWith("tel:")) phones.add(decodeURIComponent(l.slice(4)).trim()); }
+      for (const l of links) for (const [key, re] of Object.entries(SOCIAL)) if (!socials[key] && re.test(l)) socials[key] = l.replace(/\/$/, "");
+    });
+  }
+
+  // Deep pass 2: AI reads every collected source and extracts structured fields (only values stated in the text).
+  const ai = await extractWithAI(full, corpus.join("\n\n---\n\n").slice(0, 40000)).catch((e) => { console.error("ai extract failed", e instanceof Error ? e.message : ""); return null; });
+  const uniq = (a: (string | null | undefined)[]) => [...new Set(a.filter((x): x is string => !!x && !!x.trim()).map((x) => x.trim()))];
+  const exp = ai?.experience?.length ? ai.experience.map((e: any) => ({ title: e.title ?? null, company: { name: e.company ?? null, linkedin_url: null }, employment_type: null, location: e.location ?? null, start_date: yr(e.start_year), end_date: yr(e.end_year), is_current: !!e.is_current, description: e.description ?? null }))
+    : company ? [{ title: null, company: { name: company, linkedin_url: null }, employment_type: null, location: null, start_date: null, end_date: null, is_current: true, description: null }] : [];
+  const edu = ai?.education?.length ? ai.education.map((e: any) => ({ school: e.school ?? null, degree: e.degree ?? null, field_of_study: e.field ?? null, start_date: yr(e.start_year), end_date: yr(e.end_year), description: null, grade: null }))
+    : school ? [{ school, degree: null, field_of_study: null, start_date: null, end_date: null, description: null, grade: null }] : [];
+  const allEmails = uniq([...emails, ...(ai?.emails ?? [])].map((e) => e?.toLowerCase()));
+  const allPhones = uniq([...phones, ...(ai?.phones ?? [])]);
   return {
     data: {
       public_identifier: slug,
       profile_url: target,
       name: { first: first ?? null, last: last.join(" ") || null, full },
-      headline,
-      location,
-      about: about || null,
+      headline: ai?.headline || headline,
+      location: ai?.location || location,
+      about: ai?.about || about || null,
       profile_image: image ? { url: image, width: null, height: null } : null,
       background_image: null,
-      experience: company ? [{ title: null, company: { name: company, linkedin_url: null }, employment_type: null, location: null, start_date: null, end_date: null, is_current: true, description: null }] : [],
-      education: school ? [{ school, degree: null, field_of_study: null, start_date: null, end_date: null, description: null, grade: null }] : [],
-      skills: [], certifications: [], languages: [],
-      contact: { emails: [...emails].slice(0, 5), phones: [...phones].slice(0, 5), websites: [...websites].slice(0, 5), socials },
+      experience: exp,
+      education: edu,
+      skills: uniq(ai?.skills ?? []).slice(0, 25).map((n) => ({ name: n, endorsement_count: null })),
+      certifications: [],
+      languages: uniq(ai?.languages ?? []).map((n) => ({ name: n, proficiency: null })),
+      current_position: ai?.current_title ?? exp[0]?.title ?? null,
+      current_company: ai?.current_company ?? exp[0]?.company.name ?? null,
+      industry: ai?.industry ?? null,
+      achievements: uniq(ai?.achievements ?? []).slice(0, 10),
+      contact: { emails: allEmails.slice(0, 5), phones: allPhones.slice(0, 5), websites: uniq([...websites, ...(ai?.websites ?? [])].map((w) => w?.replace(/\/+$/, ""))).slice(0, 5), socials: { ...(ai?.socials ?? {}), ...socials } },
       followers, connections,
       sources: [...sources],
     } as ProfileData,
     meta: {
-      source: "public_listing (no session)", completeness: 0.25,
+      source: "public_web_research (no session)", completeness: 0.6,
       successful_sections: ["profile"], failed_sections: ["skills", "certifications", "languages"],
       warnings: ["public_listing_only:add_session_for_full_profile"], cached: false, fetched_at: new Date().toISOString(),
     },
   };
+}
+
+const yr = (y: any): YM => (typeof y === "number" && y > 1900 ? { year: y, month: null } : null);
+
+async function extractWithAI(name: string, text: string): Promise<any> {
+  const key = process.env["LOVABLE_API_KEY"];
+  if (!key) return null;
+  const S = { type: ["string", "null"] }, A = { type: "array", items: { type: "string" } }, N = { type: ["number", "null"] };
+  const obj = (props: Record<string, any>) => ({ type: "object", properties: props, required: Object.keys(props), additionalProperties: false });
+  const schema = obj({
+    headline: S, about: S, location: S, industry: S, current_title: S, current_company: S,
+    emails: A, phones: A, websites: A, skills: A, languages: A, achievements: A,
+    socials: { type: "array", items: obj({ platform: { type: "string" }, url: { type: "string" } }) },
+    experience: { type: "array", items: obj({ title: S, company: S, location: S, start_year: N, end_year: N, is_current: { type: "boolean" }, description: S }) },
+    education: { type: "array", items: obj({ school: S, degree: S, field: S, start_year: N, end_year: N }) },
+  });
+  const res = await fetch("https://ai.gateway.lovable.dev/v1/responses", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Lovable-API-Key": key, Authorization: `Bearer ${key}`, "X-Lovable-AIG-SDK": "fetch" },
+    body: JSON.stringify({
+      model: "openai/gpt-6-astra",
+      stream: true,
+      store: false,
+      reasoning: { effort: "low" },
+      instructions: "Extract professional profile data about ONE named person from the web sources. Use only facts explicitly stated about that person. Never guess or invent emails or phone numbers; ignore details about other people or companies. Use null or empty arrays for unknown values. about = 2-4 sentence bio. achievements = books, awards, notable work.",
+      input: [{ role: "user", content: `Person: ${name}\n\nSources:\n${text}` }],
+      text: { format: { type: "json_schema", name: "profile", strict: true, schema } },
+    }),
+  });
+  if (!res.ok || !res.body) throw new Error(`AI ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  let out = "", buf = "";
+  const reader = res.body.getReader(), dec = new TextDecoder();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let k: number;
+    while ((k = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, k).trim(); buf = buf.slice(k + 1);
+      if (!line.startsWith("data:")) continue;
+      try { const ev = JSON.parse(line.slice(5)); if (ev.type === "response.output_text.delta") out += ev.delta; } catch {}
+    }
+  }
+  const j = JSON.parse(out);
+  j.socials = Object.fromEntries((j.socials ?? []).map((x: any) => [x.platform.toLowerCase(), x.url]));
+  return j;
 }

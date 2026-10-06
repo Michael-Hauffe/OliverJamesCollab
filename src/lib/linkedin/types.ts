@@ -40,6 +40,10 @@ export type ProfileData = {
   }[];
   languages: { name: string; proficiency: string | null }[];
   contact?: { emails: string[]; phones: string[]; websites: string[]; socials: Record<string, string> };
+  current_position?: string | null;
+  current_company?: string | null;
+  industry?: string | null;
+  achievements?: string[];
   followers?: string | null;
   connections?: string | null;
   sources?: string[];
