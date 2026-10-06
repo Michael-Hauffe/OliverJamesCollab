@@ -27,6 +27,7 @@ type State =
   | { s: "error"; code: ScrapeErrorCode; message: string };
 
 const HELP: Partial<Record<ScrapeErrorCode, string>> = {
+  session_required: "This profile isn't publicly visible without logging in. Add your LinkedIn cookie header in Settings to fetch it.",
   missing_cookie: "Add your LinkedIn cookie header in Settings first.",
   invalid_cookie: "Check the cookie header in Settings.",
   linkedin_session_expired: "Copy a fresh cookie header from a logged-in browser and update it in Settings.",
@@ -70,7 +71,7 @@ function Dashboard() {
       {ready && !hasCookie && !apiKey && (
         <div className="flex items-center gap-3 rounded-md border border-warning/40 bg-warning/10 px-4 py-3 text-sm">
           <span className="dot bg-warning" />
-          No LinkedIn session or scraping API key configured.
+          No session configured — public profiles will be fetched without login; you'll be told if a session is needed.
           <Link to="/settings" className="ml-auto font-medium text-primary hover:underline">Open Settings</Link>
         </div>
       )}

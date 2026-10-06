@@ -56,6 +56,7 @@ export type ProfilePayload = {
 
 export type ScrapeErrorCode =
   | "missing_cookie"
+  | "session_required"
   | "invalid_cookie"
   | "invalid_url"
   | "profile_not_found"
