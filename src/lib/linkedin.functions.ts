@@ -18,12 +18,18 @@ function fail(e: unknown): Result<never> {
 
 export const scrapeProfile = createServerFn({ method: "POST" })
   .inputValidator((d) =>
-    z.object({ url: z.string().max(2048), useCache: z.boolean().default(true), apiKey: z.string().max(500).default(""), proxy: z.string().max(1000).default(""), ...opts }).parse(d),
+    z.object({ url: z.string().max(2048), mode: z.enum(["public", "api", "cookie"]).default("public"), useCache: z.boolean().default(true), apiKey: z.string().max(500).default(""), proxy: z.string().max(1000).default(""), ...opts }).parse(d),
   )
   .handler(async ({ data }): Promise<Result<ProfilePayload>> => {
     try {
       const d = detectProvider(data.apiKey);
       const relay = d?.supported ? { id: d.id, key: encodeURIComponent(stripPrefix(data.apiKey)), proxy: normalizeProxy(data.proxy) } : null;
+      if (data.mode === "public") return { ok: true, value: await scrapeNoSession({ url: data.url, timeoutMs: data.timeoutSec * 1000 }) };
+      if (data.mode === "api") {
+        if (!relay) throw new ScrapeError("missing_api_key", d && !d.supported ? d.note ?? "This API key type can't be used" : "No supported scraping API key configured");
+        return { ok: true, value: await scrapePublic({ url: data.url, relay, timeoutMs: data.timeoutSec * 1000 }) };
+      }
+      if (data.mode === "cookie") return { ok: true, value: await scrape({ relay: null, url: data.url, cookie: data.cookie, timeoutMs: data.timeoutSec * 1000, useCache: data.useCache }) };
       const value = !relay && !data.cookie.trim() ? await scrapeNoSession({ url: data.url, timeoutMs: data.timeoutSec * 1000 }) : relay && !data.cookie.trim() ? await scrapePublic({ url: data.url, relay, timeoutMs: data.timeoutSec * 1000 }) : await scrape({
         relay,
         url: data.url,
