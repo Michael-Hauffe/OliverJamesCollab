@@ -654,15 +654,14 @@ export async function scrapePublic(opts: { url: string; relay: Relay; timeoutMs:
    the profile's public search listing through the Firecrawl connector) ---------------- */
 export async function scrapeNoSession(opts: { url: string; timeoutMs: number }): Promise<ProfilePayload> {
   const slug = extractSlug(opts.url);
-  const lovable = process.env["LOVABLE_API_KEY"];
-  const fc = process.env["FIRECRAWL_API_KEY"];
-  if (!lovable || !fc) throw new ScrapeError("session_required", "Public lookup is not configured; add a LinkedIn session in Settings");
+  const firecrawl = process.env["FIRECRAWL_API_KEY"];
+  if (!firecrawl) throw new ScrapeError("session_required", "Public lookup is not configured; add a LinkedIn session in Settings");
   const target = `https://www.linkedin.com/in/${slug}`;
   let lastList: any[] = [];
   const gw = async (path: string, body: object) => {
-    const r = await fetch(`https://connector-gateway.lovable.dev/firecrawl/v2/${path}`, {
+    const r = await fetch(`https://api.firecrawl.dev/v2/${path}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${lovable}`, "X-Connection-Api-Key": fc },
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${firecrawl}` },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(45000),
     });
@@ -672,9 +671,9 @@ export async function scrapeNoSession(opts: { url: string; timeoutMs: number }):
   const search = async (query: string) => {
     let res: Response;
     try {
-      res = await fetch("https://connector-gateway.lovable.dev/firecrawl/v2/search", {
+      res = await fetch("https://api.firecrawl.dev/v2/search", {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${lovable}`, "X-Connection-Api-Key": fc },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${firecrawl}` },
         body: JSON.stringify({ query, limit: 10 }),
         signal: AbortSignal.timeout(Math.max(opts.timeoutMs, 30000)),
       });
@@ -825,7 +824,7 @@ export async function scrapeNoSession(opts: { url: string; timeoutMs: number }):
 const yr = (y: any): YM => (typeof y === "number" && y > 1900 ? { year: y, month: null } : null);
 
 async function extractWithAI(name: string, text: string): Promise<any> {
-  const key = process.env["LOVABLE_API_KEY"];
+  const key = process.env["OPENAI_API_KEY"];
   if (!key) return null;
   const S = { type: ["string", "null"] }, A = { type: "array", items: { type: "string" } }, N = { type: ["number", "null"] };
   const obj = (props: Record<string, any>) => ({ type: "object", properties: props, required: Object.keys(props), additionalProperties: false });
@@ -836,11 +835,11 @@ async function extractWithAI(name: string, text: string): Promise<any> {
     experience: { type: "array", items: obj({ title: S, company: S, location: S, start_year: N, end_year: N, is_current: { type: "boolean" }, description: S }) },
     education: { type: "array", items: obj({ school: S, degree: S, field: S, start_year: N, end_year: N }) },
   });
-  const res = await fetch("https://ai.gateway.lovable.dev/v1/responses", {
+  const res = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
-    headers: { "Content-Type": "application/json", "Lovable-API-Key": key, Authorization: `Bearer ${key}`, "X-Lovable-AIG-SDK": "fetch" },
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
     body: JSON.stringify({
-      model: "openai/gpt-6-astra",
+      model: process.env["OPENAI_MODEL"] ?? "gpt-5",
       stream: true,
       store: false,
       reasoning: { effort: "low" },
