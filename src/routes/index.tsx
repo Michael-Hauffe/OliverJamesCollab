@@ -3,6 +3,7 @@ import { useServerFn } from "@tanstack/react-start";
 import { useState } from "react";
 import { AlertCircle, Download, ExternalLink, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import { scrapeProfile } from "@/lib/linkedin.functions";
 import type { ProfilePayload, ScrapeErrorCode } from "@/lib/linkedin/types";
 import { settings, useSettings } from "@/lib/settings";
@@ -27,6 +28,7 @@ type State =
   | { s: "error"; code: ScrapeErrorCode; message: string };
 
 const HELP: Partial<Record<ScrapeErrorCode, string>> = {
+  missing_api_key: "Add a scraping API key in Settings, or switch API key off.",
   session_required: "This profile isn't publicly visible without logging in. Add your LinkedIn cookie header in Settings to fetch it.",
   missing_cookie: "Add your LinkedIn cookie header in Settings first.",
   invalid_cookie: "Check the cookie header in Settings.",
@@ -38,6 +40,7 @@ const HELP: Partial<Record<ScrapeErrorCode, string>> = {
 function Dashboard() {
   const { hasCookie, apiKey, prefs, ready } = useSettings();
   const [url, setUrl] = useState("");
+  const [mode, setMode] = useState<"public" | "api" | "cookie">("public");
   const [state, setState] = useState<State>({ s: "idle" });
   const [fmt, setFmt] = useState<"json" | "csv" | null>(null);
   const run = useServerFn(scrapeProfile);
@@ -49,7 +52,7 @@ function Dashboard() {
     setState({ s: "loading" });
     const t = performance.now();
     try {
-      const r = await run({ data: { url, cookie: settings.getCookie(), apiKey: settings.getApiKey(), proxy: settings.getProxy(), timeoutSec: prefs.timeoutSec, useCache: prefs.useCache } });
+      const r = await run({ data: { url, mode, cookie: mode === "cookie" ? settings.getCookie() : "", apiKey: mode === "api" ? settings.getApiKey() : "", proxy: mode === "api" ? settings.getProxy() : "", timeoutSec: prefs.timeoutSec, useCache: prefs.useCache } });
       if (r.ok) setState({ s: "done", p: r.value, ms: performance.now() - t });
       else {
         setState({ s: "error", code: r.code, message: r.message });
@@ -75,6 +78,21 @@ function Dashboard() {
           <Link to="/settings" className="ml-auto font-medium text-primary hover:underline">Open Settings</Link>
         </div>
       )}
+
+      <div className="panel flex flex-col gap-3 px-4 py-3 text-sm sm:flex-row sm:items-center sm:gap-6">
+        <span className="font-medium">Scrape using</span>
+        <label className="flex items-center gap-2">
+          <Switch checked={mode === "api"} onCheckedChange={(v) => setMode(v ? "api" : "public")} aria-label="Use API key scraping" />
+          API key
+        </label>
+        <label className="flex items-center gap-2">
+          <Switch checked={mode === "cookie"} onCheckedChange={(v) => setMode(v ? "cookie" : "public")} aria-label="Use cookie session scraping" />
+          Cookie session
+        </label>
+        <span className="hint sm:ml-auto">
+          {mode === "public" ? "Both off: public lookup, no login" : mode === "api" ? (apiKey ? "Using your API key" : "No API key set — add one in Settings") : hasCookie ? "Using your cookie session" : "No cookie set — add one in Settings"}
+        </span>
+      </div>
 
       <form onSubmit={submit} className="flex flex-col gap-2 sm:flex-row">
         <input
