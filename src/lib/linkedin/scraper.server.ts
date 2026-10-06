@@ -553,3 +553,69 @@ export async function scrapePublic(opts: { url: string; relay: Relay; timeoutMs:
   };
   return payload;
 }
+
+/* ---------------- no-session public lookup (LinkedIn blocks server IPs with HTTP 999, so we read
+   the profile's public search listing through the Firecrawl connector) ---------------- */
+export async function scrapeNoSession(opts: { url: string; timeoutMs: number }): Promise<ProfilePayload> {
+  const slug = extractSlug(opts.url);
+  const lovable = process.env["LOVABLE_API_KEY"];
+  const fc = process.env["FIRECRAWL_API_KEY"];
+  if (!lovable || !fc) throw new ScrapeError("session_required", "Public lookup is not configured; add a LinkedIn session in Settings");
+  const target = `https://www.linkedin.com/in/${slug}`;
+  const search = async (query: string) => {
+    let res: Response;
+    try {
+      res = await fetch("https://connector-gateway.lovable.dev/firecrawl/v2/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${lovable}`, "X-Connection-Api-Key": fc },
+        body: JSON.stringify({ query, limit: 10 }),
+        signal: AbortSignal.timeout(Math.max(opts.timeoutMs, 30000)),
+      });
+    } catch {
+      throw new ScrapeError("linkedin_timeout", "Public lookup did not respond in time");
+    }
+    if (!res.ok) {
+      console.error("public lookup failed", res.status);
+      if (res.status === 402) throw new ScrapeError("linkedin_rate_limited", "Public lookup credits are exhausted; add a LinkedIn session in Settings");
+      throw new ScrapeError("linkedin_upstream_error", `Public lookup failed (HTTP ${res.status})`);
+    }
+    const j: any = await res.json();
+    const list: any[] = j?.data?.web ?? j?.data ?? [];
+    return list.find((r) => {
+      try {
+        const u = new URL(r.url);
+        return validHost(u.hostname) && decodeURIComponent(u.pathname).replace(/^\/+|\/+$/g, "").toLowerCase() === `in/${slug.toLowerCase()}`;
+      } catch { return false; }
+    });
+  };
+  const hit = (await search(`site:linkedin.com/in/${slug}`)) ?? (await search(`"linkedin.com/in/${slug}"`));
+  if (!hit) throw new ScrapeError("session_required", "This profile isn't publicly available without a LinkedIn session. Add your session in Settings and try again.");
+  const title = unesc(String(hit.title ?? "")).replace(/\s*[|\-–]\s*LinkedIn\s*$/i, "").trim();
+  const desc = unesc(String(hit.description ?? "")).trim();
+  const [namePart, ...rest] = title.split(/\s+[-–]\s+/);
+  const full = (namePart || slug).trim();
+  const [first, ...last] = full.split(" ");
+  const field = (k: string) => desc.match(new RegExp(`${k}:\\s*([^·]+)`, "i"))?.[1]?.trim().replace(/\.\.\.$/, "") || null;
+  const company = field("Experience");
+  const school = field("Education");
+  return {
+    data: {
+      public_identifier: slug,
+      profile_url: target,
+      name: { first: first ?? null, last: last.join(" ") || null, full },
+      headline: rest.join(" - ") || null,
+      location: field("Location"),
+      about: desc || null,
+      profile_image: null,
+      background_image: null,
+      experience: company ? [{ title: null, company: { name: company, linkedin_url: null }, employment_type: null, location: null, start_date: null, end_date: null, is_current: true, description: null }] : [],
+      education: school ? [{ school, degree: null, field_of_study: null, start_date: null, end_date: null, description: null, grade: null }] : [],
+      skills: [], certifications: [], languages: [],
+    } as ProfileData,
+    meta: {
+      source: "public_listing (no session)", completeness: 0.25,
+      successful_sections: ["profile"], failed_sections: ["skills", "certifications", "languages"],
+      warnings: ["public_listing_only:add_session_for_full_profile"], cached: false, fetched_at: new Date().toISOString(),
+    },
+  };
+}

@@ -1,7 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import type { ProfilePayload, Result } from "./linkedin/types";
-import { ScrapeError, scrape, scrapePublic, testSession } from "./linkedin/scraper.server";
+import { ScrapeError, scrape, scrapePublic, scrapeNoSession, testSession } from "./linkedin/scraper.server";
 import { detectProvider, normalizeProxy, stripPrefix } from "./linkedin/providers";
 
 const opts = {
@@ -24,7 +24,7 @@ export const scrapeProfile = createServerFn({ method: "POST" })
     try {
       const d = detectProvider(data.apiKey);
       const relay = d?.supported ? { id: d.id, key: encodeURIComponent(stripPrefix(data.apiKey)), proxy: normalizeProxy(data.proxy) } : null;
-      const value = relay && !data.cookie.trim() ? await scrapePublic({ url: data.url, relay, timeoutMs: data.timeoutSec * 1000 }) : await scrape({
+      const value = !relay && !data.cookie.trim() ? await scrapeNoSession({ url: data.url, timeoutMs: data.timeoutSec * 1000 }) : relay && !data.cookie.trim() ? await scrapePublic({ url: data.url, relay, timeoutMs: data.timeoutSec * 1000 }) : await scrape({
         relay,
         url: data.url,
         cookie: data.cookie,
