@@ -44,6 +44,9 @@ export type ProfileData = {
   current_company?: string | null;
   industry?: string | null;
   achievements?: string[];
+  address?: string;
+  birthday?: string;
+  connected_since?: string;
   followers?: string | null;
   connections?: string | null;
   sources?: string[];

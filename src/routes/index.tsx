@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AlertCircle, Download, ExternalLink, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -41,6 +41,8 @@ function Dashboard() {
   const { hasCookie, apiKey, prefs, ready } = useSettings();
   const [url, setUrl] = useState("");
   const [mode, setMode] = useState<"public" | "api" | "cookie">("public");
+  // As soon as a cookie session is imported, switch to it automatically.
+  useEffect(() => { if (ready && hasCookie) setMode("cookie"); }, [ready, hasCookie]);
   const [state, setState] = useState<State>({ s: "idle" });
   const [fmt, setFmt] = useState<"json" | "csv" | null>(null);
   const run = useServerFn(scrapeProfile);
@@ -90,7 +92,7 @@ function Dashboard() {
           Cookie session
         </label>
         <span className="hint sm:ml-auto">
-          {mode === "public" ? "Both off: public lookup, no login" : mode === "api" ? (apiKey ? "Using your API key" : "No API key set — add one in Settings") : hasCookie ? "Using your cookie session" : "No cookie set — add one in Settings"}
+          {mode === "public" ? "Both off: public lookup, no login" : mode === "api" ? (apiKey ? "Using your API key" : "No API key set — add one in Settings") : hasCookie ? "✓ Session imported — full profile incl. email & phone when shared" : "No cookie set — add one in Settings"}
         </span>
       </div>
 

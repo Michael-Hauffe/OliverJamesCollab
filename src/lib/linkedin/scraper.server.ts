@@ -454,6 +454,24 @@ export async function scrape(opts: { url: string; cookie: string; timeoutMs: num
   const n = normalize(doc);
   if (!n) throw new ScrapeError("linkedin_schema_changed", "LinkedIn response contained no profile");
   await enrichSkills(n.payload, n.profileUrn, jar, tx);
+  // Logged-in only: contact info (email, phone, websites, X, address, birthday) the member shares with you.
+  try {
+    const ci = await requestJson(`${VOYAGER}/identity/profiles/${encodeURIComponent(slug)}/profileContactInfo`, {}, jar, tx);
+    const c = (ci.data ?? (ci.included ?? []).find((o: any) => String(o?.$type ?? "").includes("ContactInfo")) ?? {}) as Obj;
+    const emails = [c.emailAddress].filter(Boolean);
+    const phones = (c.phoneNumbers ?? []).map((p: any) => p?.number).filter(Boolean);
+    const websites = (c.websites ?? []).map((w: any) => w?.url).filter(Boolean);
+    const socials: Record<string, string> = {};
+    for (const t of c.twitterHandles ?? []) if (t?.name) socials.x = `https://x.com/${t.name}`;
+    for (const im of c.ims ?? []) if (im?.provider && im?.id) socials[String(im.provider).toLowerCase()] = im.id;
+    n.payload.data.contact = { emails, phones, websites, socials };
+    const extra = n.payload.data as any;
+    if (c.address) extra.address = c.address;
+    if (c.birthDateOn) extra.birthday = [c.birthDateOn.month, c.birthDateOn.day].filter(Boolean).join("/");
+    if (c.connectedAt) extra.connected_since = new Date(c.connectedAt).toISOString().slice(0, 10);
+  } catch {
+    n.payload.meta.warnings.push("contact_info_unavailable");
+  }
   n.payload.meta.source = tx.relay ? tx.relay.id : "session";
   n.payload.meta.warnings.push(...tx.warnings);
   if (opts.useCache) {
