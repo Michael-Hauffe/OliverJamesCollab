@@ -499,11 +499,40 @@ const ym = (s: any): YM => {
 export async function scrapePublic(opts: { url: string; relay: Relay; timeoutMs: number }): Promise<ProfilePayload> {
   const slug = extractSlug(opts.url);
   const target = `https://www.linkedin.com/in/${encodeURIComponent(slug)}/`;
-  let res: Response;
-  try {
-    res = await fetch(relayUrl({ ...opts.relay }, target), { signal: AbortSignal.timeout(Math.max(opts.timeoutMs, 60000)) });
-  } catch {
-    throw new ScrapeError("linkedin_timeout", "Scraping API did not respond in time");
+  // LinkedIn answers HTTP 999 to datacenter IPs, so escalate to residential/stealth proxies.
+  const tiers = (r: Relay): string[] => {
+    const u = encodeURIComponent(target);
+    if (r.id === "scrapingbee") return [
+      `https://app.scrapingbee.com/api/v1/?api_key=${r.key}&url=${u}&render_js=false&premium_proxy=true&country_code=us&transparent_status_code=true`,
+      `https://app.scrapingbee.com/api/v1/?api_key=${r.key}&url=${u}&stealth_proxy=true&render_js=true&transparent_status_code=true`,
+    ];
+    if (r.id === "scraperapi") return [
+      `https://api.scraperapi.com/?api_key=${r.key}&url=${u}&premium=true&country_code=us`,
+      `https://api.scraperapi.com/?api_key=${r.key}&url=${u}&ultra_premium=true`,
+    ];
+    return [
+      `https://api.zenrows.com/v1/?apikey=${r.key}&url=${u}&premium_proxy=true&proxy_country=us&original_status=true`,
+      `https://api.zenrows.com/v1/?apikey=${r.key}&url=${u}&premium_proxy=true&js_render=true&antibot=true&original_status=true`,
+    ];
+  };
+  let res: Response | null = null;
+  for (const url of tiers(opts.relay)) {
+    try {
+      res = await fetch(url, { signal: AbortSignal.timeout(Math.max(opts.timeoutMs, 60000)) });
+    } catch {
+      continue;
+    }
+    if (res.status !== 999 && res.status < 500) break;
+  }
+  if (!res) throw new ScrapeError("linkedin_timeout", "Scraping API did not respond in time");
+  if (res.status === 999 || res.status >= 500) {
+    try {
+      const p = await scrapeNoSession({ url: opts.url, timeoutMs: opts.timeoutMs });
+      p.meta.warnings.push(`api_key_blocked_http_${res.status}:used_public_listing`);
+      return p;
+    } catch {
+      throw new ScrapeError("session_required", `LinkedIn blocked your scraping API (HTTP ${res.status}) even with premium proxies. Switch to Cookie session to fetch this profile.`);
+    }
   }
   if (res.status === 401 || res.status === 403 || res.status === 402 || res.status === 429)
     throw new ScrapeError("linkedin_rate_limited", `Scraping API refused the request (HTTP ${res.status}): key invalid or credits exhausted. Add a LinkedIn session to fall back.`);
