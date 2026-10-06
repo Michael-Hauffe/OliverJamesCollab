@@ -755,7 +755,7 @@ export async function scrapeNoSession(opts: { url: string; timeoutMs: number }):
       current_company: ai?.current_company ?? exp[0]?.company.name ?? null,
       industry: ai?.industry ?? null,
       achievements: uniq(ai?.achievements ?? []).slice(0, 10),
-      contact: { emails: allEmails.slice(0, 5), phones: allPhones.slice(0, 5), websites: uniq([...websites, ...(ai?.websites ?? [])]).slice(0, 5), socials: { ...(ai?.socials ?? {}), ...socials } },
+      contact: { emails: allEmails.slice(0, 5), phones: allPhones.slice(0, 5), websites: uniq([...websites, ...(ai?.websites ?? [])].map((w) => w?.replace(/\/+$/, ""))).slice(0, 5), socials: { ...(ai?.socials ?? {}), ...socials } },
       followers, connections,
       sources: [...sources],
     } as ProfileData,
