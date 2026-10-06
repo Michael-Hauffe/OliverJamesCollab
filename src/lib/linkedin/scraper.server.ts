@@ -462,7 +462,7 @@ export async function scrape(opts: { url: string; cookie: string; timeoutMs: num
     const phones = (c.phoneNumbers ?? []).map((p: any) => p?.number).filter(Boolean);
     const websites = (c.websites ?? []).map((w: any) => w?.url).filter(Boolean);
     const socials: Record<string, string> = {};
-    for (const t of c.twitterHandles ?? []) if (t?.name) socials.x = `https://x.com/${t.name}`;
+    for (const t of c.twitterHandles ?? []) if (t?.name) socials["x"] = `https://x.com/${t.name}`;
     for (const im of c.ims ?? []) if (im?.provider && im?.id) socials[String(im.provider).toLowerCase()] = im.id;
     n.payload.data.contact = { emails, phones, websites, socials };
     const extra = n.payload.data as any;
