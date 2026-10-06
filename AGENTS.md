@@ -11,4 +11,4 @@
 
 - LinkedIn scraping lives in `src/lib/linkedin/scraper.server.ts` (a port of Shreyaan/linkedin-profile-api), exposed via `src/lib/linkedin.functions.ts`; the cookie header is sent per request from tab sessionStorage and never stored server-side or logged — keeps the app stateless and the secret off disk.
 - Optional scraping-API relay (key auto-detected in `src/lib/linkedin/providers.ts`) is tried first per scrape and falls back stickily to direct session fetch on provider failure; key/proxy live in tab sessionStorage like the cookie — keeps secrets off the server.
-- With no session and no user relay key, scraping uses a Firecrawl search of the public listing (LinkedIn blocks server IPs with 999); no exact slug match returns `session_required` so the UI tells the user to add a session.
+- Dashboard switches pick an explicit mode (public | api | cookie) sent to the server; only that mode's credentials are sent. Public mode uses a Firecrawl search of the public listing (LinkedIn blocks server IPs with 999); no exact slug match returns `session_required` so the UI tells the user to add a session.
