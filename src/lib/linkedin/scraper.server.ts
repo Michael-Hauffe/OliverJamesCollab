@@ -681,26 +681,29 @@ export async function scrapeNoSession(opts: { url: string; timeoutMs: number }):
   for (const pg of pages) {
     const md: string = pg.markdown ?? pg.description ?? "";
     if (!nameRe.test(`${pg.title ?? ""} ${md.slice(0, 5000)}`)) continue; // only pages about this person
+    // Only trust pages the person owns: their site (domain matches name/slug) or their own social profile.
+    let host = "";
+    try { host = new URL(pg.url).hostname.replace(/^www\./, "").toLowerCase(); } catch { continue; }
+    const bits = [...full.toLowerCase().split(/\s+/).filter((b) => b.length > 2), slug.toLowerCase().replace(/[^a-z]/g, "")];
+    const related = (t: string) => { const x = t.toLowerCase().replace(/[^a-z0-9]/g, ""); return bits.some((b) => b.length > 3 && (x.includes(b.replace(/[^a-z]/g, "")) || b.includes(x) && x.length > 4)) || x.includes(slug.toLowerCase().replace(/^madeby|[^a-z]/g, "").slice(0, 8)); };
+    const isSocial = Object.values(SOCIAL).some((re) => re.test(pg.url.replace(/\/$/, "")));
+    const owned = isSocial ? related(pg.url.split("/").filter(Boolean).pop() ?? "") : related(host.split(".")[0]!);
+    if (!owned) continue;
     sources.add(pg.url);
+    if (!isSocial) websites.add(`https://${host}`);
     const links: string[] = pg.links ?? [];
-    for (const m of md.matchAll(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g)) {
-      const e = m[0].toLowerCase();
-      if (!/\.(png|jpe?g|gif|webp|svg)$/.test(e) && !/example|sentry|wixpress|noreply|no-reply/.test(e)) emails.add(e);
+    const okEmail = (e: string) => !/\.(png|jpe?g|gif|webp|svg)$/.test(e) && !/example|sentry|wixpress|noreply|no-reply/.test(e) && (isSocial ? related(e.split("@")[0]!) || related(e.split("@")[1]!.split(".")[0]!) : e.endsWith(host) || related(e.split("@")[0]!));
+    for (const m of md.matchAll(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g)) { const e = m[0].toLowerCase(); if (okEmail(e)) emails.add(e); }
+    for (const l of links) if (l.startsWith("mailto:")) { const e = l.slice(7).split("?")[0]!.toLowerCase(); if (okEmail(e)) emails.add(e); }
+    if (!isSocial) {
+      for (const l of links) if (l.startsWith("tel:")) phones.add(decodeURIComponent(l.slice(4)).trim());
+      for (const l of links) for (const [k, re] of Object.entries(SOCIAL)) if (!socials[k] && re.test(l) && related(l.replace(/\/$/, "").split("/").pop() ?? "")) socials[k] = l.replace(/\/$/, "");
+    } else {
+      for (const [k, re] of Object.entries(SOCIAL)) if (!socials[k] && re.test(pg.url.replace(/\/$/, ""))) socials[k] = pg.url.replace(/\/$/, "");
     }
-    for (const l of links) if (l.startsWith("mailto:")) emails.add(l.slice(7).split("?")[0]!.toLowerCase());
-    for (const l of links) if (l.startsWith("tel:")) phones.add(decodeURIComponent(l.slice(4)).trim());
-    for (const m of md.matchAll(/(?:\+\d{1,3}[\s.-]?)?\(?\d{2,4}\)?[\s.-]\d{3,4}[\s.-]\d{3,4}/g)) {
-      const ph = m[0].trim(); if (ph.replace(/\D/g, "").length >= 10 && ph.replace(/\D/g, "").length <= 15 && /[\s.-]/.test(ph)) phones.add(ph);
-    }
-    for (const l of links) for (const [k, re] of Object.entries(SOCIAL)) if (!socials[k] && re.test(l)) socials[k] = l.replace(/\/$/, "");
-    try {
-      const host = new URL(pg.url).hostname.replace(/^www\./, "");
-      const slugBits = full.toLowerCase().split(/\s+/);
-      if (slugBits.some((b) => b.length > 2 && host.includes(b)) || (company && host.includes(company.toLowerCase().replace(/\W/g, "")))) websites.add(`https://${host}`);
-    } catch {}
     if (!image && pg.metadata?.ogImage && /^https:/.test(pg.metadata.ogImage)) image = pg.metadata.ogImage;
     if (!location) location = md.match(/(?:based in|lives in|located in)\s+([A-Z][A-Za-z .,'-]{2,40}?)(?:[.,;]|\s+(?:and|with|where))/)?.[1]?.trim() ?? null;
-    if (about.length < 200 && pg.description && nameRe.test(pg.description) && pg.description.length > about.length) about = pg.description;
+    if (!about && pg.description) about = pg.description;
   }
   return {
     data: {
