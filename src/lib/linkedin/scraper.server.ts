@@ -549,7 +549,19 @@ export async function scrapePublic(opts: { url: string; relay: Relay; timeoutMs:
     } catch {}
   }
   const ogTitle = meta("og:title");
-  if (!person && !ogTitle) throw new ScrapeError("linkedin_challenge", "LinkedIn returned a login wall to the scraping API; try again or add a session");
+  // LinkedIn often serves a localized sign-up/login wall instead of the profile. Only trust the page
+  // when it carries Person data, or its canonical/og:url points at this exact profile.
+  const pageUrl = (meta("og:url") ?? html.match(/<link[^>]+rel="canonical"[^>]+href="([^"]*)"/i)?.[1] ?? "").toLowerCase();
+  const isProfile = !!person || (!!ogTitle && pageUrl.includes(`/in/${slug.toLowerCase()}`) && !/authwall|signup|login/.test(pageUrl));
+  if (!isProfile) {
+    try {
+      const p = await scrapeNoSession({ url: opts.url, timeoutMs: opts.timeoutMs });
+      p.meta.warnings.push("api_key_got_login_wall:used_public_listing");
+      return p;
+    } catch {
+      throw new ScrapeError("session_required", "LinkedIn showed a login page instead of this profile. Switch to Cookie session to fetch it.");
+    }
+  }
   const full = String(person?.name ?? ogTitle?.split(/ [-|–] /)[0] ?? slug).trim();
   const [first, ...rest] = full.split(" ");
   const arr = (v: any) => (Array.isArray(v) ? v : v ? [v] : []);
