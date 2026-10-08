@@ -83,6 +83,7 @@ export type ScrapeErrorCode =
   | "linkedin_timeout"
   | "linkedin_schema_changed"
   | "linkedin_upstream_error"
+  | "proxy_error"
   | "internal_error";
 
 export type Result<T> =

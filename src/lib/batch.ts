@@ -23,6 +23,7 @@ export const FATAL: ReadonlySet<ScrapeErrorCode> = new Set<ScrapeErrorCode>([
   "linkedin_session_expired",
   "linkedin_challenge",
   "linkedin_rate_limited",
+  "proxy_error",
 ]);
 
 /** Drop repeated profiles (same slug, regardless of URL form); unrecognized links are kept so they report an error. */
