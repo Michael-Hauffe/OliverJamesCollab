@@ -13,6 +13,7 @@ const API_KEY = "lps.apikey";
 const PROXIES_KEY = "lps.proxies";
 const PREFS_KEY = "lps.prefs";
 const STATUS_KEY = "lps.status";
+const PROXY_STATUS_KEY = "lps.proxystatus";
 const DEFAULT_PREFS: Prefs = { timeoutSec: 20, useCache: true, exportFormat: "json" };
 
 const listeners = new Set<() => void>();
@@ -50,7 +51,9 @@ export const settings = {
   setProxyText(v: string) {
     if (v.trim()) sessionStorage.setItem(PROXIES_KEY, v.trim());
     else sessionStorage.removeItem(PROXIES_KEY);
+    // Both results were measured through the old proxies.
     sessionStorage.removeItem(STATUS_KEY);
+    sessionStorage.removeItem(PROXY_STATUS_KEY);
     emit();
   },
   getPrefs: () =>
@@ -67,6 +70,15 @@ export const settings = {
     sessionStorage.setItem(STATUS_KEY, JSON.stringify(s));
     emit();
   },
+  /** Result of the last "Test proxies" run for the saved list. */
+  getProxyStatus: (): ConnStatus =>
+    typeof window === "undefined"
+      ? { state: "unknown" }
+      : read(sessionStorage, PROXY_STATUS_KEY, { state: "unknown" } as ConnStatus),
+  setProxyStatus(s: ConnStatus) {
+    sessionStorage.setItem(PROXY_STATUS_KEY, JSON.stringify(s));
+    emit();
+  },
 };
 
 export function useSettings() {
@@ -77,6 +89,7 @@ export function useSettings() {
     proxyCount: 0,
     prefs: DEFAULT_PREFS,
     status: { state: "unknown" } as ConnStatus,
+    proxyStatus: { state: "unknown" } as ConnStatus,
     ready: false,
   });
   useEffect(() => {
@@ -88,6 +101,7 @@ export function useSettings() {
         proxyCount: settings.getProxies().length,
         prefs: settings.getPrefs(),
         status: settings.getStatus(),
+        proxyStatus: settings.getProxyStatus(),
         ready: true,
       });
     sync();

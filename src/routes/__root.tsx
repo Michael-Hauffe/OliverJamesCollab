@@ -114,7 +114,7 @@ function RootShell({ children }: { children: ReactNode }) {
 
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
-  const { hasCookie, status, ready } = useSettings();
+  const { hasCookie, status, proxyCount, ready } = useSettings();
   const tone = !hasCookie
     ? "bg-muted-foreground/50"
     : status.state === "error"
@@ -166,6 +166,11 @@ function RootComponent() {
             >
               <span className={`dot ${tone}`} />
               {label}
+              {ready && proxyCount > 0 && (
+                <span className="font-mono text-[11px]">
+                  · {proxyCount} prox{proxyCount === 1 ? "y" : "ies"}
+                </span>
+              )}
             </Link>
           </div>
         </header>
