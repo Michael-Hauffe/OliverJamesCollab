@@ -1,7 +1,8 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
-import { Download, Loader2, Search, Square, Upload } from "lucide-react";
+import { Download, ListPlus, Loader2, Search, Square, Upload } from "lucide-react";
 import { toast } from "sonner";
+import { ProfileResult } from "@/components/profile-view";
 import { Button } from "@/components/ui/button";
 import { FATAL, dedupeLinks, nextDelayMs, sleep } from "@/lib/batch";
 import { PROFILE_LINK_HEADER, downloadText, readProfileLinks, toCsvText } from "@/lib/csv";
@@ -9,41 +10,107 @@ import { type BatchItem, downloadBatch } from "@/lib/export";
 import { searchProfiles } from "@/lib/linkedin.functions";
 import type { ProfilePayload, Result } from "@/lib/linkedin/types";
 
-type Props = {
+/** The list a batch run works through: an imported Profiles.csv or links from a search. */
+export type Queue = { name: string; links: string[] };
+type Format = "json" | "csv";
+
+const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
+
+/** Re-renders every 100 ms until `until`, returning the seconds left. */
+function useCountdown(until: number | null) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (until == null) return;
+    const t = setInterval(() => setNow(Date.now()), 100);
+    return () => clearInterval(t);
+  }, [until]);
+  return until == null ? null : Math.max(0, (until - now) / 1000);
+}
+
+function FormatSelect({
+  format,
+  setFmt,
+  label,
+}: {
+  format: Format;
+  setFmt: (f: Format) => void;
+  label: string;
+}) {
+  return (
+    <select
+      value={format}
+      onChange={(e) => setFmt(e.target.value as Format)}
+      className="field h-8 w-auto py-0 pr-7 font-mono text-xs uppercase"
+      aria-label={label}
+    >
+      <option value="json">JSON</option>
+      <option value="csv">CSV</option>
+    </select>
+  );
+}
+
+type BatchProps = {
+  queue: Queue | null;
+  onImport: (q: Queue) => void;
   scrapeOne: (url: string) => Promise<Result<ProfilePayload>>;
-  format: "json" | "csv";
-  setFmt: (f: "json" | "csv") => void;
+  format: Format;
+  setFmt: (f: Format) => void;
+  onRunningChange: (running: boolean) => void;
 };
 
-/** Profiles.csv batch scraping and profilesv2.csv generation from a people search. */
-export function BatchTools({ scrapeOne, format, setFmt }: Props) {
-  const [file, setFile] = useState<{ name: string; links: string[] } | null>(null);
+/** Scrapes every profile in the queue with a randomized pause, then exports all results. */
+export function BatchPanel({
+  queue,
+  onImport,
+  scrapeOne,
+  format,
+  setFmt,
+  onRunningChange,
+}: BatchProps) {
   const [items, setItems] = useState<BatchItem[]>([]);
   const [running, setRunning] = useState(false);
-  const [waitMs, setWaitMs] = useState<number | null>(null);
+  const [waitUntil, setWaitUntil] = useState<number | null>(null);
+  const [selected, setSelected] = useState<number | null>(null);
   const abort = useRef<AbortController | null>(null);
   const input = useRef<HTMLInputElement>(null);
+  const secondsLeft = useCountdown(waitUntil);
+
+  // A new list replaces the previous run's results.
+  useEffect(() => {
+    setItems([]);
+    setSelected(null);
+  }, [queue]);
+
+  useEffect(() => onRunningChange(running), [running, onRunningChange]);
+
+  // Leaving the page would silently abandon the run.
+  useEffect(() => {
+    if (!running) return;
+    const warn = (e: BeforeUnloadEvent) => e.preventDefault();
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [running]);
 
   const importCsv = async (f: File | undefined) => {
     if (!f) return;
     const links = dedupeLinks(readProfileLinks(await f.text()));
-    setFile({ name: f.name, links });
-    setItems([]);
-    if (links.length)
-      toast.success(
-        `Loaded ${links.length} profile${links.length === 1 ? "" : "s"} from ${f.name}`,
-      );
-    else toast.error(`No links found under a "${PROFILE_LINK_HEADER}" header in ${f.name}`);
+    if (!links.length) {
+      toast.error(`No links found under a "${PROFILE_LINK_HEADER}" header in ${f.name}`);
+      return;
+    }
+    onImport({ name: f.name, links });
+    toast.success(`Loaded ${plural(links.length, "profile")} from ${f.name}`);
   };
 
   const runBatch = async () => {
-    if (!file?.links.length) return;
+    if (!queue?.links.length) return;
     const ctl = new AbortController();
     abort.current = ctl;
     setRunning(true);
     setItems([]);
-    for (let i = 0; i < file.links.length && !ctl.signal.aborted; i++) {
-      const link = file.links[i]!;
+    setSelected(null);
+    for (let i = 0; i < queue.links.length && !ctl.signal.aborted; i++) {
+      const link = queue.links[i]!;
       let item: BatchItem;
       try {
         const r = await scrapeOne(link);
@@ -58,19 +125,21 @@ export function BatchTools({ scrapeOne, format, setFmt }: Props) {
         toast.error(`Batch stopped: ${item.message}`);
         break;
       }
-      if (i < file.links.length - 1) {
+      if (i < queue.links.length - 1) {
         const ms = nextDelayMs();
-        setWaitMs(ms);
+        setWaitUntil(Date.now() + ms);
         await sleep(ms, ctl.signal);
-        setWaitMs(null);
+        setWaitUntil(null);
       }
     }
-    setWaitMs(null);
+    setWaitUntil(null);
     setRunning(false);
+    if (ctl.signal.aborted) toast("Batch stopped");
   };
 
-  const done = items.filter((i) => i.ok).length;
-  const total = file?.links.length ?? 0;
+  const ok = items.filter((i) => i.ok).length;
+  const total = queue?.links.length ?? 0;
+  const shown = selected != null ? items[selected] : undefined;
 
   return (
     <div className="space-y-6">
@@ -97,9 +166,9 @@ export function BatchTools({ scrapeOne, format, setFmt }: Props) {
             <Upload />
             Import CSV
           </Button>
-          {file && (
+          {queue && (
             <span className="font-mono text-[12px] text-muted-foreground">
-              {file.name} · {total} profile{total === 1 ? "" : "s"}
+              {queue.name} · {plural(total, "profile")}
             </span>
           )}
           <div className="ml-auto flex items-center gap-2">
@@ -110,7 +179,7 @@ export function BatchTools({ scrapeOne, format, setFmt }: Props) {
               </Button>
             ) : (
               <Button disabled={!total} onClick={() => void runBatch()}>
-                Scrape all
+                {items.length ? "Run again" : "Scrape all"}
               </Button>
             )}
           </div>
@@ -118,24 +187,22 @@ export function BatchTools({ scrapeOne, format, setFmt }: Props) {
 
         {(running || items.length > 0) && (
           <div className="space-y-3">
+            <div className="h-1.5 overflow-hidden rounded-full bg-secondary">
+              <div
+                className="h-full bg-primary transition-[width]"
+                style={{ width: `${total ? (items.length / total) * 100 : 0}%` }}
+              />
+            </div>
             <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-[13px] text-muted-foreground">
               {running && <Loader2 className="size-4 animate-spin" />}
               <span className="font-mono text-[12px]">
-                {items.length}/{total} processed · {done} ok · {items.length - done} failed
+                {items.length}/{total} processed · {ok} ok · {items.length - ok} failed
               </span>
-              {waitMs != null && (
-                <span className="font-mono text-[12px]">pausing {(waitMs / 1000).toFixed(1)}s</span>
+              {secondsLeft != null && (
+                <span className="font-mono text-[12px]">next in {secondsLeft.toFixed(1)}s</span>
               )}
               <div className="ml-auto flex items-center gap-2">
-                <select
-                  value={format}
-                  onChange={(e) => setFmt(e.target.value as "json" | "csv")}
-                  className="field h-8 w-auto py-0 pr-7 font-mono text-xs uppercase"
-                  aria-label="Batch export format"
-                >
-                  <option value="json">JSON</option>
-                  <option value="csv">CSV</option>
-                </select>
+                <FormatSelect format={format} setFmt={setFmt} label="Batch export format" />
                 <Button
                   size="sm"
                   variant="outline"
@@ -149,59 +216,74 @@ export function BatchTools({ scrapeOne, format, setFmt }: Props) {
             </div>
             <ol className="max-h-72 divide-y overflow-y-auto rounded-md border text-[13px]">
               {items.map((it, i) => (
-                <li key={i} className="flex items-center gap-3 px-3 py-2">
-                  <span className={`dot ${it.ok ? "bg-success" : "bg-destructive"}`} />
-                  <span className="min-w-0 flex-1 truncate font-mono text-[12px]">{it.link}</span>
-                  <span className="shrink-0 text-muted-foreground">
-                    {it.ok
-                      ? it.payload.data.name.full || it.payload.data.public_identifier
-                      : it.code}
-                  </span>
+                <li key={i}>
+                  <button
+                    type="button"
+                    disabled={!it.ok}
+                    onClick={() => setSelected(selected === i ? null : i)}
+                    title={it.ok ? "Show this profile" : it.message}
+                    className={`flex w-full items-center gap-3 px-3 py-2 text-left enabled:hover:bg-secondary/60 ${selected === i ? "bg-secondary" : ""}`}
+                  >
+                    <span className={`dot shrink-0 ${it.ok ? "bg-success" : "bg-destructive"}`} />
+                    <span className="min-w-0 flex-1 truncate font-mono text-[12px]">{it.link}</span>
+                    <span className="max-w-[45%] shrink-0 truncate text-muted-foreground">
+                      {it.ok
+                        ? it.payload.data.name.full || it.payload.data.public_identifier
+                        : it.code}
+                    </span>
+                  </button>
                 </li>
               ))}
             </ol>
+            {ok > 0 && !shown && (
+              <p className="hint">Select a scraped profile to see its details.</p>
+            )}
           </div>
         )}
       </section>
 
-      <ProfileSearch exclude={file?.links ?? []} hasProfilesCsv={!!file} />
+      {shown?.ok && <ProfileResult p={shown.payload} format={format} setFmt={setFmt} />}
     </div>
   );
 }
 
-function ProfileSearch({
-  exclude,
-  hasProfilesCsv,
-}: {
-  exclude: string[];
+type SearchProps = {
+  /** Links from the imported Profiles.csv; matching profiles are left out of the results. */
+  known: string[];
   hasProfilesCsv: boolean;
-}) {
+  disabled: boolean;
+  onScrape: (q: Queue) => void;
+};
+
+const downloadV2 = (links: string[]) =>
+  downloadText(
+    "profilesv2.csv",
+    "﻿" + toCsvText([[PROFILE_LINK_HEADER], ...links.map((l) => [l])]),
+    "text/csv;charset=utf-8",
+  );
+
+/** Finds profiles matching a description and writes the new ones to profilesv2.csv. */
+export function ProfileSearch({ known, hasProfilesCsv, disabled, onScrape }: SearchProps) {
   const [query, setQuery] = useState("");
   const [limit, setLimit] = useState(50);
   const [busy, setBusy] = useState(false);
-  const [summary, setSummary] = useState<string | null>(null);
+  const [found, setFound] = useState<{ query: string; links: string[]; excluded: number } | null>(
+    null,
+  );
   const search = useServerFn(searchProfiles);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!query.trim()) return;
     setBusy(true);
-    setSummary(null);
     try {
-      const r = await search({ data: { query, exclude, limit } });
+      const r = await search({ data: { query, exclude: known, limit } });
       if (!r.ok) {
         toast.error(r.message);
         return;
       }
-      const { links, excluded } = r.value;
-      const skipped = excluded ? ` · ${excluded} already in Profiles.csv skipped` : "";
-      setSummary(`${links.length} new profile${links.length === 1 ? "" : "s"}${skipped}`);
-      if (links.length)
-        downloadText(
-          "profilesv2.csv",
-          "\ufeff" + toCsvText([[PROFILE_LINK_HEADER], ...links.map((l) => [l])]),
-          "text/csv;charset=utf-8",
-        );
+      setFound({ query, ...r.value });
+      if (r.value.links.length) downloadV2(r.value.links);
       else toast("No new profiles found for that search");
     } catch {
       toast.error("Could not reach the server");
@@ -217,7 +299,8 @@ function ProfileSearch({
         <p className="hint mt-1">
           Describe the people you want, e.g. “data science recruiters”. Duplicates
           {hasProfilesCsv ? " and profiles already in the imported Profiles.csv" : ""} are removed.
-          {!hasProfilesCsv && " Import Profiles.csv above to skip profiles you already have."}
+          {!hasProfilesCsv &&
+            " Import Profiles.csv on the Batch tab to also skip profiles you already have."}
         </p>
       </div>
       <form onSubmit={submit} className="flex flex-col gap-2 sm:flex-row">
@@ -246,7 +329,50 @@ function ProfileSearch({
           {busy ? "Searching…" : "Create profilesv2.csv"}
         </Button>
       </form>
-      {summary && <p className="font-mono text-[12px] text-muted-foreground">{summary}</p>}
+
+      {found && (
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-[13px] text-muted-foreground">
+            <span className="font-mono text-[12px]">
+              “{found.query}” · {plural(found.links.length, "new profile")}
+              {found.excluded ? ` · ${found.excluded} already in Profiles.csv skipped` : ""}
+            </span>
+            {found.links.length > 0 && (
+              <div className="ml-auto flex items-center gap-2">
+                <Button size="sm" variant="outline" onClick={() => downloadV2(found.links)}>
+                  <Download />
+                  profilesv2.csv
+                </Button>
+                <Button
+                  size="sm"
+                  disabled={disabled}
+                  title={disabled ? "Wait for the current batch to finish" : undefined}
+                  onClick={() => onScrape({ name: "profilesv2.csv", links: found.links })}
+                >
+                  <ListPlus />
+                  Scrape these
+                </Button>
+              </div>
+            )}
+          </div>
+          {found.links.length > 0 && (
+            <ol className="max-h-72 divide-y overflow-y-auto rounded-md border font-mono text-[12px]">
+              {found.links.map((l) => (
+                <li key={l} className="truncate px-3 py-2">
+                  <a
+                    href={l}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="hover:text-primary hover:underline"
+                  >
+                    {l}
+                  </a>
+                </li>
+              ))}
+            </ol>
+          )}
+        </div>
+      )}
     </section>
   );
 }

@@ -208,7 +208,7 @@ function SettingsPage() {
         </label>
       </Section>
 
-      <Section title="Export" desc="Default format for the download button.">
+      <Section title="Export" desc="Default format for single-profile and batch exports.">
         <div className="inline-flex rounded-md border bg-card p-0.5">
           {(["json", "csv"] as const).map((f) => (
             <button
