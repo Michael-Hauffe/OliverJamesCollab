@@ -6,10 +6,20 @@ A TypeScript/TanStack Start application for extracting and normalizing LinkedIn 
 
 - LinkedIn profile extraction through the Voyager API
 - Public profile lookup through Firecrawl when no session is available
-- Optional scraping-provider relays
+- Optional scraping-provider relays (ScrapingBee, ScraperAPI, ZenRows) for public pages
 - Structured profile normalization
 - Cookie/session validation
 - JSON and CSV export
+- Batch scraping from an imported `Profiles.csv`
+- People search that writes new profile links to `profilesv2.csv`
+
+## Batch scraping
+
+On the Dashboard, **Import CSV** loads a `Profiles.csv` whose column A is headed `Profile Link`, with one LinkedIn profile URL per row. Duplicate profiles are dropped on import. **Scrape all** scrapes each profile with the selected mode (public, API key or cookie session), pausing 5 seconds ± a random 0–3 seconds between profiles. The batch stops early on errors that would fail every remaining row (missing or expired session, verification challenge, rate limiting). **Export all** downloads every result as JSON or long-format CSV, keyed by the input link; failed rows are included with their error code.
+
+## Profile search
+
+Under **Find profiles**, describe the people you want (for example `data science recruiters`) and press **Create profilesv2.csv**. The server searches for matching `linkedin.com/in/` profiles through Firecrawl, removes duplicates and any profile already in the imported `Profiles.csv`, and downloads `profilesv2.csv` with a single `Profile Link` column. Requires `FIRECRAWL_API_KEY`.
 - Server-side execution for provider credentials and session data
 
 ## Requirements

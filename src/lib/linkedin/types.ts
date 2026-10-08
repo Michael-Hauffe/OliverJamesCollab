@@ -39,7 +39,12 @@ export type ProfileData = {
     credential_url: string | null;
   }[];
   languages: { name: string; proficiency: string | null }[];
-  contact?: { emails: string[]; phones: string[]; websites: string[]; socials: Record<string, string> };
+  contact?: {
+    emails: string[];
+    phones: string[];
+    websites: string[];
+    socials: Record<string, string>;
+  };
   current_position?: string | null;
   current_company?: string | null;
   industry?: string | null;
@@ -80,4 +85,5 @@ export type ScrapeErrorCode =
   | "linkedin_upstream_error"
   | "internal_error";
 
-export type Result<T> = { ok: true; value: T } | { ok: false; code: ScrapeErrorCode; message: string };
+export type Result<T> =
+  { ok: true; value: T } | { ok: false; code: ScrapeErrorCode; message: string };

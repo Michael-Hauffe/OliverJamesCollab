@@ -8,10 +8,9 @@ import {
   Scripts,
   type ErrorComponentProps,
 } from "@tanstack/react-router";
-import { useEffect, type ReactNode } from "react";
+import type { ReactNode } from "react";
 
 import appCss from "../styles.css?url";
-import { reportLovableError } from "../lib/lovable-error-reporting";
 import { Toaster } from "@/components/ui/sonner";
 import { useSettings } from "@/lib/settings";
 
@@ -40,9 +39,6 @@ function NotFoundComponent() {
 function ErrorComponent({ error, reset }: ErrorComponentProps) {
   console.error(error);
   const router = useRouter();
-  useEffect(() => {
-    reportLovableError(error, { boundary: "tanstack_root_error_component" });
-  }, [error]);
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
@@ -119,8 +115,22 @@ function RootShell({ children }: { children: ReactNode }) {
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
   const { hasCookie, status, ready } = useSettings();
-  const tone = !hasCookie ? "bg-muted-foreground/50" : status.state === "error" ? "bg-destructive" : status.state === "ok" ? "bg-success" : "bg-warning";
-  const label = !ready ? "" : !hasCookie ? "No session" : status.state === "ok" ? "Session verified" : status.state === "error" ? "Session failed" : "Session set, untested";
+  const tone = !hasCookie
+    ? "bg-muted-foreground/50"
+    : status.state === "error"
+      ? "bg-destructive"
+      : status.state === "ok"
+        ? "bg-success"
+        : "bg-warning";
+  const label = !ready
+    ? ""
+    : !hasCookie
+      ? "No session"
+      : status.state === "ok"
+        ? "Session verified"
+        : status.state === "error"
+          ? "Session failed"
+          : "Session set, untested";
 
   return (
     <QueryClientProvider client={queryClient}>
@@ -128,11 +138,18 @@ function RootComponent() {
         <header className="border-b bg-card">
           <div className="mx-auto flex h-14 max-w-5xl items-center gap-6 px-4 sm:px-6">
             <Link to="/" className="flex items-center gap-2 text-sm font-semibold tracking-tight">
-              <span className="grid size-6 place-items-center rounded bg-foreground font-mono text-[11px] text-background">in</span>
+              <span className="grid size-6 place-items-center rounded bg-foreground font-mono text-[11px] text-background">
+                in
+              </span>
               Profile Extractor
             </Link>
             <nav className="flex gap-1 text-sm">
-              {([["/", "Dashboard"], ["/settings", "Settings"]] as const).map(([to, l]) => (
+              {(
+                [
+                  ["/", "Dashboard"],
+                  ["/settings", "Settings"],
+                ] as const
+              ).map(([to, l]) => (
                 <Link
                   key={to}
                   to={to}
@@ -143,7 +160,10 @@ function RootComponent() {
                 </Link>
               ))}
             </nav>
-            <Link to="/settings" className="ml-auto hidden items-center gap-2 text-[13px] text-muted-foreground sm:flex">
+            <Link
+              to="/settings"
+              className="ml-auto hidden items-center gap-2 text-[13px] text-muted-foreground sm:flex"
+            >
               <span className={`dot ${tone}`} />
               {label}
             </Link>
