@@ -10,14 +10,29 @@ import {
   testSession,
 } from "./linkedin/scraper.server";
 import { detectProvider, stripPrefix } from "./linkedin/providers";
+import type { ProxyCheck } from "./linkedin/proxy";
+import {
+  ProxyError,
+  checkProxies,
+  proxyRequired,
+  resolvePool,
+  serverProxies,
+  vetRequestProxies,
+} from "./linkedin/proxy.server";
 
 const opts = {
   cookie: z.string().max(20000),
   timeoutSec: z.number().min(5).max(60).default(20),
+  /** Proxies from this browser's Settings; they replace the server's PROXY_URLS pool. */
+  proxies: z.array(z.string().max(1000)).max(200).default([]),
 };
+
+/** Request proxies are vetted (no private-network targets) before the pool is chosen. */
+const poolFor = async (requested: string[]) => resolvePool(await vetRequestProxies(requested));
 
 function fail(e: unknown): Result<never> {
   if (e instanceof ScrapeError) return { ok: false, code: e.code, message: e.message };
+  if (e instanceof ProxyError) return { ok: false, code: "proxy_error", message: e.message };
   // Never log or echo raw errors: they could contain request data.
   console.error("scrape: unexpected error", e instanceof Error ? e.name : "unknown");
   return { ok: false, code: "internal_error", message: "Unexpected server error" };
@@ -46,6 +61,7 @@ export const scrapeProfile = createServerFn({ method: "POST" })
             cookie: data.cookie,
             timeoutMs,
             useCache: data.useCache,
+            proxies: await poolFor(data.proxies),
           }),
         };
       if (data.mode === "api") {
@@ -68,7 +84,7 @@ export const testConnection = createServerFn({ method: "POST" })
   .inputValidator((d) => z.object(opts).parse(d))
   .handler(async ({ data }): Promise<Result<{ checkedAt: string }>> => {
     try {
-      await testSession(data.cookie, data.timeoutSec * 1000);
+      await testSession(data.cookie, data.timeoutSec * 1000, await poolFor(data.proxies));
       return { ok: true, value: { checkedAt: new Date().toISOString() } };
     } catch (e) {
       return fail(e);
@@ -88,6 +104,24 @@ export const searchProfiles = createServerFn({ method: "POST" })
   .handler(async ({ data }): Promise<Result<{ links: string[]; excluded: number }>> => {
     try {
       return { ok: true, value: await searchProfileLinks({ ...data, timeoutMs: 30000 }) };
+    } catch (e) {
+      return fail(e);
+    }
+  });
+
+/** What the server will use when the browser sends no proxies of its own. */
+export const proxyStatus = createServerFn({ method: "GET" }).handler(async () => ({
+  serverPool: serverProxies().length,
+  required: proxyRequired(),
+}));
+
+export const testProxies = createServerFn({ method: "POST" })
+  .inputValidator((d) => z.object({ proxies: opts.proxies }).parse(d))
+  .handler(async ({ data }): Promise<Result<ProxyCheck[]>> => {
+    try {
+      const pool = await poolFor(data.proxies);
+      if (!pool.length) throw new ProxyError("No proxies to test");
+      return { ok: true, value: await checkProxies(pool, 15000) };
     } catch (e) {
       return fail(e);
     }

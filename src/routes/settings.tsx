@@ -4,9 +4,10 @@ import { useEffect, useState } from "react";
 import { Eye, EyeOff, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { testConnection } from "@/lib/linkedin.functions";
+import { proxyStatus, testConnection, testProxies } from "@/lib/linkedin.functions";
 import { settings, useSettings } from "@/lib/settings";
 import { detectProvider } from "@/lib/linkedin/providers";
+import { type ProxyCheck, parseProxyList } from "@/lib/linkedin/proxy";
 
 export const Route = createFileRoute("/settings")({
   head: () => ({
@@ -61,7 +62,11 @@ function SettingsPage() {
     setTesting(true);
     try {
       const r = await test({
-        data: { cookie: settings.getCookie(), timeoutSec: prefs.timeoutSec },
+        data: {
+          cookie: settings.getCookie(),
+          timeoutSec: prefs.timeoutSec,
+          proxies: settings.getProxies(),
+        },
       });
       settings.setStatus(
         r.ok
@@ -166,6 +171,8 @@ function SettingsPage() {
           </div>
         )}
       </Section>
+
+      <ProxySection />
 
       <RelaySection />
 
@@ -285,6 +292,144 @@ function RelaySection() {
           </Button>
         )}
       </div>
+    </Section>
+  );
+}
+
+function ProxySection() {
+  const { proxyText, ready } = useSettings();
+  const [draft, setDraft] = useState("");
+  const [server, setServer] = useState<{ serverPool: number; required: boolean } | null>(null);
+  const [checks, setChecks] = useState<ProxyCheck[] | null>(null);
+  const [testing, setTesting] = useState(false);
+  const status = useServerFn(proxyStatus);
+  const test = useServerFn(testProxies);
+
+  useEffect(() => {
+    if (ready) setDraft(proxyText);
+  }, [ready, proxyText]);
+  useEffect(() => {
+    status()
+      .then(setServer)
+      .catch(() => setServer(null));
+  }, [status]);
+
+  const { proxies, invalid } = parseProxyList(draft);
+  const saved = parseProxyList(proxyText).proxies;
+  const dirty = draft.trim() !== proxyText.trim();
+
+  const runTest = async () => {
+    setTesting(true);
+    setChecks(null);
+    try {
+      const r = await test({ data: { proxies: saved } });
+      if (r.ok) setChecks(r.value);
+      else toast.error(r.message);
+    } catch {
+      toast.error("Could not reach the server");
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const serverNote = !server
+    ? null
+    : server.serverPool
+      ? `The server has ${server.serverPool} prox${server.serverPool === 1 ? "y" : "ies"} configured (PROXY_URLS); a list saved here replaces it for this tab.`
+      : server.required
+        ? "The server requires a proxy (PROXY_REQUIRED) and has none configured: add at least one here."
+        : "The server has no proxies configured; without a list here, requests go direct.";
+
+  return (
+    <Section
+      title="Proxies"
+      desc="Optional. Routes cookie-session requests to LinkedIn through your HTTP(S) proxies. Each LinkedIn session sticks to one proxy; a proxy that fails or gets blocked is benched and the next one is used."
+    >
+      <div className="space-y-2">
+        <label htmlFor="proxies" className="label">
+          Proxy list
+        </label>
+        <textarea
+          id="proxies"
+          rows={4}
+          autoComplete="off"
+          spellCheck={false}
+          className="field min-h-24 py-2 font-mono"
+          placeholder={"http://user:pass@host:port\nhost:port:user:pass"}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+        />
+        <p className="hint">
+          One per line. Kept only in this browser tab.
+          {draft.trim() &&
+            ` ${proxies.length} valid${invalid.length ? `, ${invalid.length} not recognized: ${invalid.slice(0, 3).join(", ")}` : ""}.`}
+        </p>
+        {serverNote && <p className="hint">{serverNote}</p>}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          disabled={!dirty || invalid.length > 0}
+          onClick={() => {
+            settings.setProxyText(draft);
+            setChecks(null);
+            toast.success(proxies.length ? "Proxies saved for this tab" : "Proxies cleared");
+          }}
+        >
+          Save
+        </Button>
+        <Button
+          variant="outline"
+          onClick={() => void runTest()}
+          disabled={testing || dirty || (!saved.length && !server?.serverPool)}
+          title={dirty ? "Save first" : undefined}
+        >
+          {testing && <Loader2 className="animate-spin" />}
+          Test proxies
+        </Button>
+        {proxyText && (
+          <Button
+            variant="ghost"
+            onClick={() => {
+              settings.setProxyText("");
+              setChecks(null);
+              toast("Proxies cleared");
+            }}
+          >
+            Clear
+          </Button>
+        )}
+      </div>
+      {checks && (
+        <div className="overflow-x-auto rounded-md border">
+          <table className="w-full text-left text-[13px]">
+            <thead className="text-muted-foreground">
+              <tr className="border-b">
+                <th className="px-3 py-2 font-medium">Proxy</th>
+                <th className="px-3 py-2 font-medium">Exit IP</th>
+                <th className="px-3 py-2 font-medium">Latency</th>
+                <th className="px-3 py-2 font-medium">LinkedIn</th>
+              </tr>
+            </thead>
+            <tbody>
+              {checks.map((c) => (
+                <tr key={c.proxy} className="border-b last:border-0">
+                  <td className="px-3 py-2 font-mono text-[12px]">
+                    <span className={`dot mr-2 ${c.ok ? "bg-success" : "bg-destructive"}`} />
+                    {c.proxy}
+                  </td>
+                  <td className="px-3 py-2 font-mono text-[12px]">{c.ip ?? "—"}</td>
+                  <td className="px-3 py-2 font-mono text-[12px]">
+                    {c.ms != null ? `${c.ms} ms` : "—"}
+                  </td>
+                  <td className="px-3 py-2 text-muted-foreground">
+                    {c.error ?? (c.linkedin != null ? `HTTP ${c.linkedin}` : "—")}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </Section>
   );
 }

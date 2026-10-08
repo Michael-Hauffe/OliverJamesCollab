@@ -4,6 +4,7 @@
  * call, and is never logged, cached by value, or included in error messages.
  */
 import { profileSlug, profileUrl } from "./links";
+import { type Egress, ProxyError, createEgress } from "./proxy.server";
 import type { ProviderId } from "./providers";
 import type { ProfileData, ProfilePayload, ScrapeErrorCode, YM } from "./types";
 
@@ -357,7 +358,7 @@ const BASE_HEADERS: Record<string, string> = {
 
 /* ---------------- scraping-API relay (public-page mode only) ---------------- */
 export type Relay = { id: ProviderId; key: string };
-type Tx = { timeoutMs: number };
+type Tx = { timeoutMs: number; egress: Egress };
 
 async function requestJson(
   url: string,
@@ -375,12 +376,13 @@ async function requestJson(
   };
   let res: Response;
   try {
-    res = await fetch(`${url}?${qs}`, {
+    res = await tx.egress.fetch(`${url}?${qs}`, {
       headers,
       redirect: "manual",
       signal: AbortSignal.timeout(tx.timeoutMs),
     });
   } catch (e: any) {
+    if (e instanceof ProxyError) throw new ScrapeError("proxy_error", e.message);
     if (e?.name === "TimeoutError" || e?.name === "AbortError")
       throw new ScrapeError("linkedin_timeout", "LinkedIn did not respond in time");
     throw new ScrapeError("linkedin_upstream_error", "Network error while contacting LinkedIn");
@@ -497,11 +499,12 @@ export async function scrape(opts: {
   cookie: string;
   timeoutMs: number;
   useCache: boolean;
+  proxies: string[];
 }) {
-  const tx: Tx = { timeoutMs: opts.timeoutMs };
   const slug = extractSlug(opts.url);
   const jar = parseCookieHeader(opts.cookie);
-  const key = `${await sha16(slug.toLowerCase())}:${await sha16(jar["li_at"]!)}`;
+  const session = await sha16(jar["li_at"]!);
+  const key = `${await sha16(slug.toLowerCase())}:${session}`;
   if (opts.useCache) {
     const hit = cache.get(key);
     if (hit && Date.now() - hit.at < CACHE_TTL_MS) {
@@ -510,6 +513,7 @@ export async function scrape(opts: {
       return copy;
     }
   }
+  const tx: Tx = { timeoutMs: opts.timeoutMs, egress: egressFor(opts.proxies, session) };
   const doc = await fetchFullProfile(slug, jar, tx);
   const n = normalize(doc);
   if (!n)
@@ -542,7 +546,8 @@ export async function scrape(opts: {
   } catch {
     n.payload.meta.warnings.push("contact_info_unavailable");
   }
-  n.payload.meta.source = "session";
+  const via = tx.egress.via();
+  n.payload.meta.source = via ? `session via ${via}` : "session";
   if (opts.useCache) {
     if (cache.size > 200) cache.clear();
     cache.set(key, { at: Date.now(), payload: structuredClone(n.payload) });
@@ -550,12 +555,23 @@ export async function scrape(opts: {
   return n.payload;
 }
 
+/** Proxy pool for one LinkedIn session; the session hash keeps it on the same exit IP. */
+function egressFor(proxies: string[], session: string): Egress {
+  try {
+    return createEgress(proxies, session);
+  } catch (e) {
+    if (e instanceof ProxyError) throw new ScrapeError("proxy_error", e.message);
+    throw e;
+  }
+}
+
 /** Lightweight session check: the logged-in member's own profile. */
-export async function testSession(cookie: string, timeoutMs: number) {
+export async function testSession(cookie: string, timeoutMs: number, proxies: string[]) {
   const jar = parseCookieHeader(cookie);
+  const egress = egressFor(proxies, await sha16(jar["li_at"]!));
   let res: Response;
   try {
-    res = await fetch(`${VOYAGER}/me`, {
+    res = await egress.fetch(`${VOYAGER}/me`, {
       headers: {
         ...BASE_HEADERS,
         cookie: Object.entries(jar)
@@ -567,7 +583,8 @@ export async function testSession(cookie: string, timeoutMs: number) {
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (e: any) {
-    if (e?.name === "TimeoutError")
+    if (e instanceof ProxyError) throw new ScrapeError("proxy_error", e.message);
+    if (e?.name === "TimeoutError" || e?.name === "AbortError")
       throw new ScrapeError("linkedin_timeout", "LinkedIn did not respond in time");
     throw new ScrapeError("linkedin_upstream_error", "Network error while contacting LinkedIn");
   }
