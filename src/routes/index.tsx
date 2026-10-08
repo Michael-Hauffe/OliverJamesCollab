@@ -48,11 +48,13 @@ const HELP: Partial<Record<ScrapeErrorCode, string>> = {
     "Copy a fresh cookie header from a logged-in browser and update it in Settings.",
   linkedin_challenge:
     "Log in to LinkedIn in a browser, complete the verification, then copy fresh cookies.",
-  linkedin_rate_limited: "Wait a while before trying again.",
+  linkedin_rate_limited: "Wait a while before trying again, or add proxies in Settings.",
+  proxy_error:
+    "Check your proxies in Settings (use Test proxies), or clear them to connect directly.",
 };
 
 function Dashboard() {
-  const { hasCookie, apiKey, prefs, ready } = useSettings();
+  const { hasCookie, apiKey, proxyCount, prefs, ready } = useSettings();
   const [url, setUrl] = useState("");
   const [mode, setMode] = useState<"public" | "api" | "cookie">("public");
   // As soon as a cookie session is imported, switch to it automatically.
@@ -76,6 +78,7 @@ function Dashboard() {
         mode,
         cookie: mode === "cookie" ? settings.getCookie() : "",
         apiKey: mode === "api" ? settings.getApiKey() : "",
+        proxies: mode === "cookie" ? settings.getProxies() : [],
         timeoutSec: prefs.timeoutSec,
         useCache: prefs.useCache,
       },
@@ -149,7 +152,7 @@ function Dashboard() {
                   ? "Using your API key"
                   : "No API key set — add one in Settings"
                 : hasCookie
-                  ? "✓ Session imported — full profile incl. email & phone when shared"
+                  ? `✓ Session imported — full profile incl. email & phone when shared${proxyCount ? ` · via ${proxyCount} prox${proxyCount === 1 ? "y" : "ies"}` : ""}`
                   : "No cookie set — add one in Settings"}
         </span>
       </div>
