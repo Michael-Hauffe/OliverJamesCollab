@@ -25,6 +25,13 @@ const opts = {
   timeoutSec: z.number().min(5).max(60).default(20),
   /** Proxies from this browser's Settings; they replace the server's PROXY_URLS pool. */
   proxies: z.array(z.string().max(1000)).max(200).default([]),
+  /** The browser's own user agent: LinkedIn expects a session to keep using the browser it came from. */
+  userAgent: z
+    .string()
+    .max(512)
+    .regex(/^Mozilla\/5\.0 [\x20-\x7e]+$/)
+    .optional()
+    .catch(undefined),
 };
 
 /** Request proxies are vetted (no private-network targets) before the pool is chosen. */
@@ -62,6 +69,7 @@ export const scrapeProfile = createServerFn({ method: "POST" })
             timeoutMs,
             useCache: data.useCache,
             proxies: await poolFor(data.proxies),
+            userAgent: data.userAgent,
           }),
         };
       if (data.mode === "api") {
@@ -84,7 +92,12 @@ export const testConnection = createServerFn({ method: "POST" })
   .inputValidator((d) => z.object(opts).parse(d))
   .handler(async ({ data }): Promise<Result<{ checkedAt: string }>> => {
     try {
-      await testSession(data.cookie, data.timeoutSec * 1000, await poolFor(data.proxies));
+      await testSession(
+        data.cookie,
+        data.timeoutSec * 1000,
+        await poolFor(data.proxies),
+        data.userAgent,
+      );
       return { ok: true, value: { checkedAt: new Date().toISOString() } };
     } catch (e) {
       return fail(e);

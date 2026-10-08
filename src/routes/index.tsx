@@ -43,9 +43,9 @@ const HELP: Partial<Record<ScrapeErrorCode, string>> = {
   session_required:
     "This profile isn't publicly visible without logging in. Add your LinkedIn cookie header in Settings to fetch it.",
   missing_cookie: "Add your LinkedIn cookie header in Settings first.",
-  invalid_cookie: "Check the cookie header in Settings.",
+  invalid_cookie: "Paste the full Cookie header from one LinkedIn request in Settings.",
   linkedin_session_expired:
-    "Copy a fresh cookie header from a logged-in browser and update it in Settings.",
+    "In the browser where you're logged in to LinkedIn, copy the full Cookie header (Settings explains how) and paste it in Settings. Use this app in that same browser.",
   linkedin_challenge:
     "Log in to LinkedIn in a browser, complete the verification, then copy fresh cookies.",
   linkedin_rate_limited: "Wait a while before trying again, or add proxies in Settings.",
@@ -79,6 +79,7 @@ function Dashboard() {
         cookie: mode === "cookie" ? settings.getCookie() : "",
         apiKey: mode === "api" ? settings.getApiKey() : "",
         proxies: mode === "cookie" ? settings.getProxies() : [],
+        userAgent: navigator.userAgent,
         timeoutSec: prefs.timeoutSec,
         useCache: prefs.useCache,
       },

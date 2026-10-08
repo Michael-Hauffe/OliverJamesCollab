@@ -50,6 +50,8 @@ export function parseCookieHeader(raw: string | undefined | null): Record<string
   const bad = (m: string) => new ScrapeError("invalid_cookie", m);
   if (!raw || !raw.trim())
     throw new ScrapeError("missing_cookie", "No LinkedIn session configured");
+  // DevTools "Copy value" gives the bare value, but copying the whole header line keeps "cookie:".
+  raw = raw.trim().replace(/^cookie:\s*/i, "");
   if (new TextEncoder().encode(raw).length > MAX_COOKIE_HEADER_BYTES)
     throw bad("Cookie header exceeds 16 KiB");
   for (const ch of raw) {
@@ -346,37 +348,93 @@ export function normalize(doc: Obj): { payload: ProfilePayload; profileUrn: stri
 }
 
 /* ---------------- transport ---------------- */
-const BASE_HEADERS: Record<string, string> = {
-  accept: "application/vnd.linkedin.normalized+json+2.1",
-  "accept-language": "en-US,en;q=0.9",
-  referer: "https://www.linkedin.com/feed/",
-  "user-agent":
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
-  "x-li-lang": "en_US",
-  "x-restli-protocol-version": "2.0.0",
-};
+const DEFAULT_USER_AGENT =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36";
+
+/**
+ * Headers for a Voyager call. LinkedIn ties a session to the browser that created it, so requests
+ * reuse that browser's user agent and every cookie it sent; a session that suddenly shows up with a
+ * different browser and only li_at/JSESSIONID looks hijacked and gets logged out.
+ */
+function voyagerHeaders(jar: Record<string, string>, userAgent: string | undefined) {
+  const csrf = jar["JSESSIONID"]!.replace(/^"|"$/g, "");
+  return {
+    accept: "application/vnd.linkedin.normalized+json+2.1",
+    "accept-language": "en-US,en;q=0.9",
+    referer: "https://www.linkedin.com/feed/",
+    "user-agent": userAgent ?? DEFAULT_USER_AGENT,
+    "x-li-lang": "en_US",
+    "x-restli-protocol-version": "2.0.0",
+    "x-li-track": JSON.stringify({
+      clientVersion: "1.13.0",
+      mpVersion: "1.13.0",
+      osName: "web",
+      deviceFormFactor: "DESKTOP",
+      mpName: "voyager-web",
+    }),
+    // Browsers send JSESSIONID quoted; the CSRF header carries the bare value.
+    cookie: Object.entries({ ...jar, JSESSIONID: `"${csrf}"` })
+      .map(([k, v]) => `${k}=${v}`)
+      .join("; "),
+    "csrf-token": csrf,
+  };
+}
+
+/**
+ * LinkedIn refused a request (401/403/redirect). That alone doesn't prove the session expired —
+ * a CSRF mismatch or a refused endpoint look the same — so callers confirm before saying so.
+ */
+export class RejectedError extends ScrapeError {
+  constructor(
+    public status: number,
+    public detail: "csrf" | "logged_out" | "refused",
+  ) {
+    super("linkedin_session_expired", `LinkedIn rejected the request (HTTP ${status})`);
+  }
+}
+
+/** Apply Set-Cookie updates so later requests in this scrape carry them, like a browser would. */
+function absorbCookies(res: Response, jar: Record<string, string>, tx: Tx) {
+  const lines = typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : [];
+  for (const line of lines) {
+    const [pair = "", ...attrs] = line.split(";");
+    const eq = pair.indexOf("=");
+    if (eq < 1) continue;
+    const name = pair.slice(0, eq).trim();
+    const value = pair.slice(eq + 1).trim();
+    const expired = attrs.some((a) => {
+      const [k = "", v = ""] = a.split("=").map((x) => x.trim().toLowerCase());
+      return (k === "max-age" && Number(v) <= 0) || (k === "expires" && Date.parse(v) < Date.now());
+    });
+    if (expired || !value || value === "delete me" || value === '"delete me"') {
+      if (name === "li_at") tx.loggedOut = true;
+      else if (name !== "JSESSIONID") delete jar[name];
+    } else if (name !== "li_at" || !tx.loggedOut) jar[name] = value;
+  }
+}
 
 /* ---------------- scraping-API relay (public-page mode only) ---------------- */
 export type Relay = { id: ProviderId; key: string };
-type Tx = { timeoutMs: number; egress: Egress };
+type Tx = {
+  timeoutMs: number;
+  egress: Egress;
+  userAgent?: string | undefined;
+  /** LinkedIn cleared li_at during this scrape: the session was logged out server-side. */
+  loggedOut?: boolean;
+};
 
 async function requestJson(
   url: string,
   params: Record<string, string>,
   jar: Record<string, string>,
   tx: Tx,
+  opts: { requireIncluded?: boolean } = {},
 ) {
   const qs = new URLSearchParams(params).toString();
-  const headers = {
-    ...BASE_HEADERS,
-    cookie: Object.entries(jar)
-      .map(([k, v]) => `${k}=${v}`)
-      .join("; "),
-    "csrf-token": jar["JSESSIONID"]!.replace(/^"|"$/g, ""),
-  };
+  const headers = voyagerHeaders(jar, tx.userAgent);
   let res: Response;
   try {
-    res = await tx.egress.fetch(`${url}?${qs}`, {
+    res = await tx.egress.fetch(qs ? `${url}?${qs}` : url, {
       headers,
       redirect: "manual",
       signal: AbortSignal.timeout(tx.timeoutMs),
@@ -387,6 +445,7 @@ async function requestJson(
       throw new ScrapeError("linkedin_timeout", "LinkedIn did not respond in time");
     throw new ScrapeError("linkedin_upstream_error", "Network error while contacting LinkedIn");
   }
+  absorbCookies(res, jar, tx);
   const s = res.status;
   if (s === 999)
     throw new ScrapeError(
@@ -395,11 +454,18 @@ async function requestJson(
     );
   if (s === 404)
     throw new ScrapeError("profile_not_found", "Profile not found or not visible to this session");
-  if (s === 401 || s === 403)
-    throw new ScrapeError(
-      "linkedin_session_expired",
-      "Session rejected; cookies invalid or expired",
+  if (s === 401 || s === 403) {
+    const body = (await res.text().catch(() => "")).slice(0, 2000).toLowerCase();
+    if (body.includes("challenge") || body.includes("checkpoint"))
+      throw new ScrapeError(
+        "linkedin_challenge",
+        "LinkedIn requires interactive verification for this account",
+      );
+    throw new RejectedError(
+      s,
+      tx.loggedOut ? "logged_out" : body.includes("csrf") ? "csrf" : "refused",
     );
+  }
   if (s === 429)
     throw new ScrapeError("linkedin_rate_limited", "Rate limited by LinkedIn; try again later");
   if (s >= 300 && s < 400) {
@@ -408,10 +474,7 @@ async function requestJson(
         "linkedin_challenge",
         "LinkedIn requires interactive verification for this account",
       );
-    throw new ScrapeError(
-      "linkedin_session_expired",
-      "LinkedIn redirected the request; session expired",
-    );
+    throw new RejectedError(s, tx.loggedOut ? "logged_out" : "refused");
   }
   if (s >= 400) {
     const head = (await res.text()).slice(0, 2000).toLowerCase();
@@ -428,7 +491,7 @@ async function requestJson(
   } catch {
     throw new ScrapeError("linkedin_schema_changed", "LinkedIn response was not JSON");
   }
-  if (!doc || typeof doc !== "object" || !("included" in doc))
+  if (!doc || typeof doc !== "object" || (opts.requireIncluded !== false && !("included" in doc)))
     throw new ScrapeError("linkedin_schema_changed", "Unexpected response shape from LinkedIn");
   return doc as Obj;
 }
@@ -437,18 +500,70 @@ const hasProfile = (doc: Obj) =>
   (doc.included ?? []).some((o: any) => String(o?.$type ?? "").endsWith(T.PROFILE));
 
 async function fetchFullProfile(slug: string, jar: Record<string, string>, tx: Tx) {
-  const params = {
-    q: "memberIdentity",
-    memberIdentity: slug,
-    decorationId: FULL_PROFILE_DECORATION,
-  };
-  let doc = await requestJson(DASH_PROFILES, params, jar, tx);
-  if (hasProfile(doc)) return doc;
-  doc = await requestJson(DASH_PROFILES, { ...params, decorationId: TOP_CARD_DECORATION }, jar, tx);
-  if (!hasProfile(doc))
-    throw new ScrapeError("linkedin_schema_changed", "LinkedIn response contained no profile");
-  doc._lpa_top_card_fallback = true;
-  return doc;
+  let refused: RejectedError | null = null;
+  // The full decoration is versioned and LinkedIn retires old versions; the top card is the fallback.
+  for (const decorationId of [FULL_PROFILE_DECORATION, TOP_CARD_DECORATION]) {
+    let doc: Obj;
+    try {
+      doc = await requestJson(
+        DASH_PROFILES,
+        { q: "memberIdentity", memberIdentity: slug, decorationId },
+        jar,
+        tx,
+      );
+    } catch (e) {
+      if (e instanceof RejectedError && e.detail === "refused") {
+        refused = e;
+        continue;
+      }
+      throw e;
+    }
+    if (hasProfile(doc)) {
+      if (decorationId === TOP_CARD_DECORATION) doc._lpa_top_card_fallback = true;
+      return doc;
+    }
+  }
+  if (refused) throw refused;
+  throw new ScrapeError("linkedin_schema_changed", "LinkedIn response contained no profile");
+}
+
+/** The logged-in member's own profile: the cheapest call that only fails when the session is bad. */
+const fetchMe = (jar: Record<string, string>, tx: Tx) =>
+  requestJson(`${VOYAGER}/me`, {}, jar, tx, { requireIncluded: false });
+
+const LOGGED_OUT_HELP =
+  "LinkedIn logged this session out (it cleared the li_at cookie). This happens when a session is used from a different browser or network than the one it was created in. Copy the full Cookie header again from the browser you use for LinkedIn, and don't log out there.";
+
+/** Turn a rejection into an accurate error, checking the session itself before calling it expired. */
+async function explainRejection(
+  e: RejectedError,
+  jar: Record<string, string>,
+  tx: Tx,
+): Promise<never> {
+  if (e.detail === "logged_out") throw new ScrapeError("linkedin_session_expired", LOGGED_OUT_HELP);
+  if (e.detail === "csrf")
+    throw new ScrapeError(
+      "invalid_cookie",
+      "LinkedIn's CSRF check failed: the JSESSIONID cookie doesn't belong to this li_at. Copy the full Cookie header from one browser session so both come from the same login.",
+    );
+  try {
+    await fetchMe(jar, tx);
+  } catch (me) {
+    if (me instanceof RejectedError) {
+      if (me.detail === "logged_out")
+        throw new ScrapeError("linkedin_session_expired", LOGGED_OUT_HELP);
+      throw new ScrapeError(
+        "linkedin_session_expired",
+        `LinkedIn rejected the session (HTTP ${me.status}); the cookies are invalid or expired.`,
+      );
+    }
+    throw me;
+  }
+  // The session works; only this request was refused.
+  throw new ScrapeError(
+    "linkedin_upstream_error",
+    `LinkedIn refused the profile request (HTTP ${e.status}) even though your session is valid. The profile may be restricted, or LinkedIn changed this API.`,
+  );
 }
 
 async function enrichSkills(
@@ -500,6 +615,7 @@ export async function scrape(opts: {
   timeoutMs: number;
   useCache: boolean;
   proxies: string[];
+  userAgent?: string | undefined;
 }) {
   const slug = extractSlug(opts.url);
   const jar = parseCookieHeader(opts.cookie);
@@ -513,12 +629,27 @@ export async function scrape(opts: {
       return copy;
     }
   }
-  const tx: Tx = { timeoutMs: opts.timeoutMs, egress: egressFor(opts.proxies, session) };
-  const doc = await fetchFullProfile(slug, jar, tx);
+  const tx: Tx = {
+    timeoutMs: opts.timeoutMs,
+    egress: egressFor(opts.proxies, session),
+    userAgent: opts.userAgent,
+  };
+  let doc: Obj;
+  try {
+    doc = await fetchFullProfile(slug, jar, tx);
+  } catch (e) {
+    if (e instanceof RejectedError) return explainRejection(e, jar, tx);
+    throw e;
+  }
   const n = normalize(doc);
   if (!n)
     throw new ScrapeError("linkedin_schema_changed", "LinkedIn response contained no profile");
-  await enrichSkills(n.payload, n.profileUrn, jar, tx);
+  try {
+    await enrichSkills(n.payload, n.profileUrn, jar, tx);
+  } catch (e) {
+    if (!(e instanceof RejectedError)) throw e;
+    n.payload.meta.warnings.push("skills_pagination_refused");
+  }
   // Logged-in only: contact info (email, phone, websites, X, address, birthday) the member shares with you.
   try {
     const ci = await requestJson(
@@ -565,41 +696,28 @@ function egressFor(proxies: string[], session: string): Egress {
   }
 }
 
-/** Lightweight session check: the logged-in member's own profile. */
-export async function testSession(cookie: string, timeoutMs: number, proxies: string[]) {
+/** Lightweight session check: the logged-in member's own profile, with the same diagnosis as a scrape. */
+export async function testSession(
+  cookie: string,
+  timeoutMs: number,
+  proxies: string[],
+  userAgent?: string,
+) {
   const jar = parseCookieHeader(cookie);
-  const egress = egressFor(proxies, await sha16(jar["li_at"]!));
-  let res: Response;
+  const tx: Tx = { timeoutMs, egress: egressFor(proxies, await sha16(jar["li_at"]!)), userAgent };
   try {
-    res = await egress.fetch(`${VOYAGER}/me`, {
-      headers: {
-        ...BASE_HEADERS,
-        cookie: Object.entries(jar)
-          .map(([k, v]) => `${k}=${v}`)
-          .join("; "),
-        "csrf-token": jar["JSESSIONID"]!.replace(/^"|"$/g, ""),
-      },
-      redirect: "manual",
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-  } catch (e: any) {
-    if (e instanceof ProxyError) throw new ScrapeError("proxy_error", e.message);
-    if (e?.name === "TimeoutError" || e?.name === "AbortError")
-      throw new ScrapeError("linkedin_timeout", "LinkedIn did not respond in time");
-    throw new ScrapeError("linkedin_upstream_error", "Network error while contacting LinkedIn");
-  }
-  if (res.status === 200) return { ok: true as const };
-  if (res.status === 401 || res.status === 403 || (res.status >= 300 && res.status < 400))
+    await fetchMe(jar, tx);
+  } catch (e) {
+    if (!(e instanceof RejectedError)) throw e;
+    if (e.detail === "logged_out")
+      throw new ScrapeError("linkedin_session_expired", LOGGED_OUT_HELP);
+    if (e.detail === "csrf") return explainRejection(e, jar, tx);
     throw new ScrapeError(
       "linkedin_session_expired",
-      "Session rejected; cookies invalid or expired",
+      `LinkedIn rejected the session (HTTP ${e.status}); the cookies are invalid or expired.`,
     );
-  if (res.status === 429 || res.status === 999)
-    throw new ScrapeError(
-      "linkedin_rate_limited",
-      "LinkedIn is blocking or rate-limiting this session",
-    );
-  throw new ScrapeError("linkedin_upstream_error", `LinkedIn returned HTTP ${res.status}`);
+  }
+  return { ok: true as const };
 }
 
 /* ---------------- cookie-less mode: public profile page via scraping API ---------------- */

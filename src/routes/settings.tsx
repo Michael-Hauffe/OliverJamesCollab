@@ -44,6 +44,19 @@ function Section({
   );
 }
 
+/** Cookies a browser always sends to LinkedIn; without them a pasted session looks hijacked. */
+const BROWSER_COOKIES = ["bcookie", "bscookie", "lidc"];
+
+function missingSessionCookies(raw: string): string[] {
+  const names = new Set(
+    raw
+      .replace(/^\s*cookie:\s*/i, "")
+      .split(";")
+      .map((p) => p.split("=")[0]!.trim()),
+  );
+  return BROWSER_COOKIES.filter((n) => !names.has(n));
+}
+
 /**
  * Credential input shared by the session, proxy and API key fields: masked by default with a
  * show/hide toggle, and empty once saved, with the placeholder saying a value is stored.
@@ -155,6 +168,7 @@ function SettingsPage() {
   const test = useServerFn(testConnection);
 
   useEffect(() => setDraft(""), [hasCookie]);
+  const missing = draft.trim() ? missingSessionCookies(draft) : [];
 
   const save = () => {
     settings.setCookie(draft);
@@ -169,6 +183,7 @@ function SettingsPage() {
           cookie: settings.getCookie(),
           timeoutSec: prefs.timeoutSec,
           proxies: settings.getProxies(),
+          userAgent: navigator.userAgent,
         },
       });
       settings.setStatus(
@@ -205,12 +220,25 @@ function SettingsPage() {
             value={draft}
             onChange={setDraft}
             saved={hasCookie}
-            placeholder={'li_at=…; JSESSIONID="ajax:…"'}
+            placeholder={'Paste the full Cookie header: bcookie=…; li_at=…; JSESSIONID="ajax:…"; …'}
           />
+          {missing.length > 0 && (
+            <p className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-[13px]">
+              Only part of the session was pasted (missing{" "}
+              <code className="font-mono">{missing.join(", ")}</code>). LinkedIn may log out a
+              session that arrives without its browser cookies — paste the whole Cookie header
+              instead.
+            </p>
+          )}
           <p className="hint">
-            Must include <code className="font-mono text-foreground">li_at</code> and{" "}
-            <code className="font-mono text-foreground">JSESSIONID</code>. Kept only in this browser
-            tab and cleared when it closes. Never stored on the server.
+            In the browser where you're logged in to LinkedIn: open linkedin.com, press F12 →
+            Network, reload, click any{" "}
+            <code className="font-mono text-foreground">linkedin.com</code> request, and under
+            Request Headers copy the whole <code className="font-mono text-foreground">cookie</code>{" "}
+            value. It must include <code className="font-mono text-foreground">li_at</code> and{" "}
+            <code className="font-mono text-foreground">JSESSIONID</code>. Use this app in that same
+            browser, since LinkedIn ties a session to it. Kept only in this tab; never stored on the
+            server.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
