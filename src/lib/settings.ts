@@ -9,7 +9,6 @@ export type ConnStatus = { state: "unknown" | "ok" | "error"; message?: string; 
 
 const COOKIE_KEY = "lps.cookie";
 const API_KEY = "lps.apikey";
-const PROXY_KEY = "lps.proxy";
 const PREFS_KEY = "lps.prefs";
 const STATUS_KEY = "lps.status";
 const DEFAULT_PREFS: Prefs = { timeoutSec: 20, useCache: true, exportFormat: "json" };
@@ -27,7 +26,8 @@ function read<T>(store: Storage, key: string, fallback: T): T {
 }
 
 export const settings = {
-  getCookie: () => (typeof window === "undefined" ? "" : (sessionStorage.getItem(COOKIE_KEY) ?? "")),
+  getCookie: () =>
+    typeof window === "undefined" ? "" : (sessionStorage.getItem(COOKIE_KEY) ?? ""),
   setCookie(v: string) {
     if (v.trim()) sessionStorage.setItem(COOKIE_KEY, v.trim());
     else sessionStorage.removeItem(COOKIE_KEY);
@@ -35,22 +35,21 @@ export const settings = {
     emit();
   },
   getApiKey: () => (typeof window === "undefined" ? "" : (sessionStorage.getItem(API_KEY) ?? "")),
-  getProxy: () => (typeof window === "undefined" ? "" : (sessionStorage.getItem(PROXY_KEY) ?? "")),
   setApiKey(v: string) {
-    if (v.trim()) sessionStorage.setItem(API_KEY, v.trim()); else sessionStorage.removeItem(API_KEY);
+    if (v.trim()) sessionStorage.setItem(API_KEY, v.trim());
+    else sessionStorage.removeItem(API_KEY);
     emit();
   },
-  setProxy(v: string) {
-    if (v.trim()) sessionStorage.setItem(PROXY_KEY, v.trim()); else sessionStorage.removeItem(PROXY_KEY);
-    emit();
-  },
-  getPrefs: () => (typeof window === "undefined" ? DEFAULT_PREFS : read(localStorage, PREFS_KEY, DEFAULT_PREFS)),
+  getPrefs: () =>
+    typeof window === "undefined" ? DEFAULT_PREFS : read(localStorage, PREFS_KEY, DEFAULT_PREFS),
   setPrefs(p: Partial<Prefs>) {
     localStorage.setItem(PREFS_KEY, JSON.stringify({ ...settings.getPrefs(), ...p }));
     emit();
   },
   getStatus: (): ConnStatus =>
-    typeof window === "undefined" ? { state: "unknown" } : read(sessionStorage, STATUS_KEY, { state: "unknown" } as ConnStatus),
+    typeof window === "undefined"
+      ? { state: "unknown" }
+      : read(sessionStorage, STATUS_KEY, { state: "unknown" } as ConnStatus),
   setStatus(s: ConnStatus) {
     sessionStorage.setItem(STATUS_KEY, JSON.stringify(s));
     emit();
@@ -61,14 +60,19 @@ export function useSettings() {
   const [snap, setSnap] = useState({
     hasCookie: false,
     apiKey: "",
-    proxy: "",
     prefs: DEFAULT_PREFS,
     status: { state: "unknown" } as ConnStatus,
     ready: false,
   });
   useEffect(() => {
     const sync = () =>
-      setSnap({ hasCookie: !!settings.getCookie(), apiKey: settings.getApiKey(), proxy: settings.getProxy(), prefs: settings.getPrefs(), status: settings.getStatus(), ready: true });
+      setSnap({
+        hasCookie: !!settings.getCookie(),
+        apiKey: settings.getApiKey(),
+        prefs: settings.getPrefs(),
+        status: settings.getStatus(),
+        ready: true,
+      });
     sync();
     listeners.add(sync);
     return () => void listeners.delete(sync);

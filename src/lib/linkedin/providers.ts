@@ -23,19 +23,14 @@ export function detectProvider(raw: string): Detected {
   }
   if (!id) return null;
   if (id === "rapidapi")
-    return { id, name: NAMES[id], supported: false, note: "RapidAPI keys are per-API and can't relay LinkedIn requests; session scraping will be used." };
+    return {
+      id,
+      name: NAMES[id],
+      supported: false,
+      note: "RapidAPI keys are per-API and can't relay LinkedIn requests; session scraping will be used.",
+    };
   return { id, name: NAMES[id], supported: true };
 }
 
-export const stripPrefix = (k: string) => k.trim().replace(/^(scrapingbee|scraperapi|zenrows|rapidapi):/i, "");
-
-/** Accepts http://user:pass@host:port or host:port:user:pass. Returns normalized URL or null. */
-export function normalizeProxy(raw: string): string | null {
-  const s = raw.trim();
-  if (!s) return null;
-  if (/^(https?|socks5):\/\/[^\s]+:\d+\/?$/i.test(s) || /^(https?|socks5):\/\/[^\s]+@[^\s]+:\d+\/?$/i.test(s)) return s.replace(/\/$/, "");
-  const p = s.split(":");
-  if (p.length === 4 && /^\d+$/.test(p[1]!)) return `http://${encodeURIComponent(p[2]!)}:${encodeURIComponent(p[3]!)}@${p[0]}:${p[1]}`;
-  if (p.length === 2 && /^\d+$/.test(p[1]!)) return `http://${s}`;
-  return null;
-}
+export const stripPrefix = (k: string) =>
+  k.trim().replace(/^(scrapingbee|scraperapi|zenrows|rapidapi):/i, "");
